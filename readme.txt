@@ -4,7 +4,7 @@ Tags: search, ai, anthropic, claude, summary
 Requires at least: 6.9
 Tested up to: 7.0
 Requires PHP: 8.4
-Stable tag: 2.1.0
+Stable tag: 2.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -162,6 +162,9 @@ The plugin is designed with privacy in mind:
 6. WordPress dashboard widget with quick stats
 
 == Changelog ==
+
+= 2.1.1 =
+* Changed: The "Was this summary helpful?" buttons now use the site design system: pill-shaped secondary buttons with thumbs icons, accent-tinted hover, press feedback, a focus ring, and the recorded vote stays highlighted in the accent color. They follow the Appearance colors set in the plugin settings.
 
 = 2.1.0 =
 * Fixed: "Show sources" and the feedback buttons did nothing when a summary was served from the browser session cache.
