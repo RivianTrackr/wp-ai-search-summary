@@ -5,6 +5,16 @@ All notable changes to RivianTrackr AI Search Summary will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-09-11
+
+### Changed
+- **Header hierarchy.** A gold "AI summary" eyebrow (11px, uppercase, sparkle icon) sits above the title, and the title reads "Results for" in muted weight followed by the query in bold, so the query is the focal point.
+- **Answer typography.** The model's HTML is wrapped in `.riviantrackr-answer` and styled explicitly: 15px / 1.6 line height, paragraph and list rhythm, accent-colored list markers, 16px/600 subheads for `h3`/`h4`, and links with a 3px underline offset. Previously it inherited whatever the theme gave a generic `div`.
+- **Sources as ranked cards.** The toggle is now a chevron disclosure (rotates on expand, 0.25s) labelled "Sources" with an accent-tinted count pill; the list is an ordered list of bordered cards on the deep background, each with a rank circle, the title in the accent color, a date and category line read from the actual post (`get_the_date`, first category), and the excerpt. The JS toggle now only changes `aria-expanded`/`aria-label` so the icon and count survive.
+- **State callouts.** No-results and off-topic responses render as info-blue callouts (search / compass icon), the rate-limit and timeout states as accent-tinted warning callouts (clock icon), and other failures as an error-tinted callout, each with a short title and the server's message. The 429/403 branches now pass the REST error code through so the right callout is chosen.
+- **Entry animation.** The answer and callouts use the design system `slideUp` (8px, 0.3s ease) when they replace the skeleton; disabled under `prefers-reduced-motion`.
+- **Badge wording.** "Powered by Claude" replaces "Powered by Anthropic" (text only, no logo) in line with Anthropic's guidance that third parties may state in plain text that a product uses Claude but may not use Anthropic's logos or imply endorsement.
+
 ## [2.1.1] - 2026-09-11
 
 ### Changed

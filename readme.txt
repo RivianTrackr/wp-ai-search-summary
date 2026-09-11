@@ -4,7 +4,7 @@ Tags: search, ai, anthropic, claude, summary
 Requires at least: 6.9
 Tested up to: 7.0
 Requires PHP: 8.4
-Stable tag: 2.1.1
+Stable tag: 2.2.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -162,6 +162,14 @@ The plugin is designed with privacy in mind:
 6. WordPress dashboard widget with quick stats
 
 == Changelog ==
+
+= 2.2.0 =
+* Changed: Summary card header now shows a gold "AI summary" eyebrow label above "Results for" and the query, so the query stands out from the label.
+* Changed: Answer typography is styled consistently (15px, 1.6 line height, accent list markers, sized subheads, offset link underlines) instead of inheriting the theme's generic div styles.
+* Changed: Sources are a chevron disclosure with a count pill, and each source is a ranked card with the article title, date and category (read from the actual post), and the excerpt.
+* Changed: No-results, off-topic, throttled and error states render as callouts with an icon and title instead of a plain grey sentence.
+* Changed: The answer and callouts fade and slide in when they replace the loading skeleton (disabled under prefers-reduced-motion).
+* Changed: The attribution badge reads "Powered by Claude" (plain text, no logo), per Anthropic's trademark guidance for third parties.
 
 = 2.1.1 =
 * Changed: The "Was this summary helpful?" buttons now use the site design system: pill-shaped secondary buttons with thumbs icons, accent-tinted hover, press feedback, a focus ring, and the recorded vote stays highlighted in the accent color. They follow the Appearance colors set in the plugin settings.

@@ -107,15 +107,54 @@
     container.setAttribute('aria-busy', 'false');
   }
 
-  // The container is an aria-live="polite" region, so a plain paragraph is
+  var CALLOUT_ICONS = {
+    search: '<svg class="riviantrackr-callout-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+    clock: '<svg class="riviantrackr-callout-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    compass: '<svg class="riviantrackr-callout-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>',
+    alert: '<svg class="riviantrackr-callout-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>'
+  };
+
+  // Map an error code (or HTTP status) to a callout style, title and icon.
+  function calloutFor(code) {
+    var codes = (window.RivianTrackrAI && window.RivianTrackrAI.errorCodes) || {};
+    if (code === (codes.noResults || 'no_results')) {
+      return { type: 'info', icon: 'search', title: 'No matching articles' };
+    }
+    if (code === (codes.offTopic || 'off_topic')) {
+      return { type: 'info', icon: 'compass', title: 'Outside this site\'s topics' };
+    }
+    if (code === 'rate_limited') {
+      return { type: 'warning', icon: 'clock', title: 'Give it a moment' };
+    }
+    if (code === 'timeout') {
+      return { type: 'warning', icon: 'clock', title: 'This is taking too long' };
+    }
+    if (code === 'bot_detected') {
+      return { type: 'warning', icon: 'alert', title: 'Summary unavailable for this request' };
+    }
+    return { type: 'error', icon: 'alert', title: 'Summary unavailable' };
+  }
+
+  // The container is an aria-live="polite" region, so the callout is
   // announced once; role="alert" here would make screen readers announce twice.
-  function renderError(container, message) {
+  function renderError(container, message, code) {
     markLoaded(container);
-    var errorP = document.createElement('p');
-    errorP.className = 'riviantrackr-error';
-    errorP.textContent = String(message);
+    var spec = calloutFor(code);
+    var box = document.createElement('div');
+    box.className = 'riviantrackr-callout riviantrackr-callout--' + spec.type;
+    box.innerHTML = CALLOUT_ICONS[spec.icon] || CALLOUT_ICONS.alert;
+    var body = document.createElement('div');
+    var title = document.createElement('strong');
+    title.className = 'riviantrackr-callout-title';
+    title.textContent = spec.title;
+    var text = document.createElement('p');
+    text.className = 'riviantrackr-callout-text';
+    text.textContent = String(message);
+    body.appendChild(title);
+    body.appendChild(text);
+    box.appendChild(body);
     container.innerHTML = '';
-    container.appendChild(errorP);
+    container.appendChild(box);
   }
 
   function renderAnswer(container, html) {
@@ -132,6 +171,22 @@
     }
   }
 
+  // Toggle the sources list. The button keeps its chevron and count; only
+  // aria-expanded (which drives the chevron rotation) and the accessible
+  // label change.
+  function setSourcesExpanded(btn, list, expanded) {
+    if (expanded) {
+      list.removeAttribute('hidden');
+    } else {
+      list.setAttribute('hidden', 'hidden');
+    }
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    var label = expanded
+      ? (btn.getAttribute('data-label-hide') || 'Hide sources')
+      : (btn.getAttribute('data-label-show') || 'Show sources');
+    btn.setAttribute('aria-label', label);
+  }
+
   // Re-open the sources list if the visitor left it open on a previous search.
   function restoreSourcesState(container) {
     try {
@@ -141,9 +196,7 @@
       var wrapper = btn.closest('.riviantrackr-sources');
       var list = wrapper && wrapper.querySelector('.riviantrackr-sources-list');
       if (list && list.hasAttribute('hidden')) {
-        list.removeAttribute('hidden');
-        btn.textContent = btn.getAttribute('data-label-hide') || 'Hide sources';
-        btn.setAttribute('aria-expanded', 'true');
+        setSourcesExpanded(btn, list, true);
       }
     } catch (e) {}
   }
@@ -163,18 +216,12 @@
       if (!list) return;
 
       var isHidden = list.hasAttribute('hidden');
-      var showLabel = btn.getAttribute('data-label-show') || 'Show sources';
-      var hideLabel = btn.getAttribute('data-label-hide') || 'Hide sources';
 
       if (isHidden) {
-        list.removeAttribute('hidden');
-        btn.textContent = hideLabel;
-        btn.setAttribute('aria-expanded', 'true');
+        setSourcesExpanded(btn, list, true);
         try { localStorage.setItem(SOURCES_STATE_KEY, '1'); } catch (err) {}
       } else {
-        list.setAttribute('hidden', 'hidden');
-        btn.textContent = showLabel;
-        btn.setAttribute('aria-expanded', 'false');
+        setSourcesExpanded(btn, list, false);
         try { localStorage.removeItem(SOURCES_STATE_KEY); } catch (err) {}
       }
     });
@@ -301,7 +348,7 @@
         // successful searches.
         logSessionCacheHit(q, cached.results_count);
       } else if (cached.error) {
-        renderError(container, cached.error);
+        renderError(container, cached.error, cached.error_code);
       } else {
         markLoaded(container);
       }
@@ -326,7 +373,7 @@
     var timeoutId = setTimeout(function() {
       abortController.abort();
       progressTimers.forEach(clearTimeout);
-      renderError(container, 'Request timed out. Please refresh the page to try again.');
+      renderError(container, 'Request timed out. Please refresh the page to try again.', 'timeout');
     }, timeoutMs);
 
     // Progressive status messages for slow responses. The status element is a
@@ -362,13 +409,14 @@
 
         // 429 / 403 carry a WP_Error body with a specific message; prefer it.
         if (response.status === 429 || response.status === 403) {
+          var fallbackCode = response.status === 429 ? 'rate_limited' : 'bot_detected';
           var fallback = response.status === 429
             ? 'Too many requests. Please wait a moment and try again.'
             : 'Access denied. AI search is not available for this request.';
           return response.json().then(function(body) {
-            return { error: (body && body.message) || fallback };
+            return { error: (body && body.message) || fallback, error_code: (body && body.code) || fallbackCode };
           }, function() {
-            return { error: fallback };
+            return { error: fallback, error_code: fallbackCode };
           });
         }
 
@@ -395,11 +443,11 @@
           if (cacheableErrors.indexOf(data.error_code) !== -1) {
             saveToCache(q, data);
           }
-          renderError(container, data.error);
+          renderError(container, data.error, data.error_code);
           return;
         }
 
-        renderError(container, 'AI summary is not available right now.');
+        renderError(container, 'AI summary is not available right now.', 'api_error');
       })
       .catch(function(error) {
         clearTimeout(timeoutId);
@@ -408,7 +456,7 @@
         if (error.name === 'AbortError') {
           return;
         }
-        renderError(container, 'AI summary is not available right now.');
+        renderError(container, 'AI summary is not available right now.', 'api_error');
       });
   });
 })();
