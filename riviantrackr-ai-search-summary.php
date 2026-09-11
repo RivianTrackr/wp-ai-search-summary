@@ -6,7 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Plugin Name: AI Search Summary
  * Description: Add AI-powered summaries to WordPress search results using Anthropic Claude. Non-blocking, with analytics, cache control, and collapsible sources.
- * Version: 2.0.1
+ * Version: 2.1.0
  * Author: RivianTrackr
  * Author URI: https://github.com/RivianTrackr/
  * License: GPL v2 or later
@@ -14,10 +14,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Requires at least: 6.9
  * Requires PHP: 8.4
  * Text Domain: riviantrackr-ai-search-summary
- * Domain Path: /languages
  */
 
-define( 'RIVIANTRACKR_VERSION', '2.0.1' );
+define( 'RIVIANTRACKR_VERSION', '2.1.0' );
 define( 'RIVIANTRACKR_ASSET_SUFFIX', defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? '' : '.min' );
 
 // Load the namespaced class autoloader.
@@ -44,6 +43,8 @@ define( 'RIVIANTRACKR_IP_LOG_RATE_LIMIT', 60 );    // Logging/feedback requests 
 
 // Anthropic API
 define( 'RIVIANTRACKR_ANTHROPIC_API_VERSION', '2023-06-01' );
+define( 'RIVIANTRACKR_DEFAULT_MODEL', 'claude-opus-5' );   // Used when no model has been saved yet
+define( 'RIVIANTRACKR_DEFAULT_EFFORT', 'low' );            // output_config.effort for models that support it
 
 // Pagination defaults
 define( 'RIVIANTRACKR_PER_PAGE_QUERIES', 20 );
@@ -110,7 +111,9 @@ class RivianTrackr_AI_Search_Summary {
         add_action( 'wp_dashboard_setup', array( $this, 'register_dashboard_widget' ) );
         add_action( 'loop_start', array( $this, 'inject_ai_summary_placeholder' ) );
         add_action( 'template_redirect', array( $this, 'log_no_results_search' ) );
+        add_action( 'template_redirect', array( $this, 'prevent_search_page_caching' ), 0 );
         add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_frontend_assets' ) );
+        add_filter( 'wp_resource_hints', array( $this, 'add_rest_resource_hints' ), 10, 2 );
         add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
         add_filter( 'rest_post_dispatch', array( $this, 'add_rate_limit_headers' ), 10, 3 );
         add_action( 'wp_ajax_riviantrackr_test_api_key', array( $this, 'ajax_test_api_key' ) );
@@ -132,10 +135,6 @@ class RivianTrackr_AI_Search_Summary {
         // updated — regardless of whether it was saved via sanitize_options() or
         // a direct update_option() call elsewhere.
         add_action( 'update_option_' . $this->option_name, array( $this, 'flush_options_cache' ) );
-
-        // Redact API keys from HTTP API debug output to prevent leaking
-        // credentials into WP_DEBUG_LOG files.
-        add_filter( 'http_api_debug', array( $this, 'redact_api_key_in_debug' ), 10, 5 );
     }
 
     /**
@@ -162,8 +161,9 @@ class RivianTrackr_AI_Search_Summary {
 
         // Content Security Policy — restrict resources to same-origin plus
         // inline styles/scripts required by WordPress admin.  img-src allows
-        // data: URIs for inline badge images.
-        header( "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.anthropic.com" );
+        // data: URIs for inline badge images, Gravatar for the admin bar
+        // avatar, and s.w.org for core's emoji fallback images.
+        header( "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.gravatar.com https://s.w.org; connect-src 'self' https://api.anthropic.com" );
     }
 
     public function add_plugin_settings_link( $links ) {
@@ -350,6 +350,14 @@ class RivianTrackr_AI_Search_Summary {
         self::create_feedback_table();
         self::add_missing_columns(); // Add columns to existing tables
         self::add_missing_indexes(); // Add indexes to existing tables
+
+        // deactivate() unschedules the daily purge; put it back if the
+        // setting is still enabled so a deactivate/reactivate cycle does not
+        // silently stop log cleanup.
+        $options = get_option( 'riviantrackr_options', array() );
+        if ( is_array( $options ) && ! empty( $options['auto_purge_enabled'] ) && ! wp_next_scheduled( 'riviantrackr_daily_log_purge' ) ) {
+            wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', 'riviantrackr_daily_log_purge' );
+        }
     }
 
     /**
@@ -410,8 +418,8 @@ class RivianTrackr_AI_Search_Summary {
             $opts['allow_reasoning_models']
         );
 
-        if ( ! empty( $opts['model'] ) && strpos( $opts['model'], 'claude-' ) !== 0 ) {
-            $opts['model'] = '';
+        if ( empty( $opts['model'] ) || strpos( $opts['model'], 'claude-' ) !== 0 ) {
+            $opts['model'] = RIVIANTRACKR_DEFAULT_MODEL;
         }
 
         update_option( $this->option_name, $opts );
@@ -478,7 +486,7 @@ class RivianTrackr_AI_Search_Summary {
         self::create_logs_table();
         self::add_missing_columns(); // Ensure columns exist
         self::add_missing_indexes(); // Ensure indexes exist
-        $this->logs_table_checked = false;
+        $this->analytics->reset_table_check();
         return $this->logs_table_is_available();
     }
 
@@ -553,7 +561,8 @@ class RivianTrackr_AI_Search_Summary {
         $defaults = array(
             'anthropic_api_key'       => '',
             'anthropic_api_key_valid' => null,
-            'model'                => '',
+            'model'                => RIVIANTRACKR_DEFAULT_MODEL,
+            'effort'               => RIVIANTRACKR_DEFAULT_EFFORT,
             'max_posts'            => 20,
             'max_tokens'           => RIVIANTRACKR_MAX_TOKENS,
             'enable'               => 0,
@@ -582,6 +591,12 @@ class RivianTrackr_AI_Search_Summary {
         $opts = get_option( $this->option_name, array() );
         $this->options_cache = wp_parse_args( is_array( $opts ) ? $opts : array(), $defaults );
 
+        // A saved-but-empty model (possible after the 2.0 migration) must
+        // never reach the API as "".
+        if ( empty( $this->options_cache['model'] ) ) {
+            $this->options_cache['model'] = RIVIANTRACKR_DEFAULT_MODEL;
+        }
+
         // Override API key if defined via constant (more secure than database storage)
         if ( $this->is_anthropic_key_from_constant() ) {
             $this->options_cache['anthropic_api_key'] = RIVIANTRACKR_ANTHROPIC_API_KEY;
@@ -600,43 +615,41 @@ class RivianTrackr_AI_Search_Summary {
         $this->options_cache = null;
     }
 
-    /**
-     * Redact API keys from HTTP API debug data.
-     *
-     * WordPress fires `http_api_debug` after every remote request.  When
-     * WP_DEBUG_LOG is on, plugins or drop-ins may log the full request
-     * including headers.  This filter strips the API key header from
-     * requests to api.anthropic.com so it never reaches the debug log.
-     *
-     * @param mixed  $response HTTP response or WP_Error.
-     * @param string $context  'response' or 'transports'.
-     * @param string $class    Transport class name.
-     * @param array  $parsed_args Request arguments.
-     * @param string $url      Request URL.
-     * @return mixed Unmodified response (filter is used for side-effect only).
-     */
-    public function redact_api_key_in_debug( $response, $context, $class, $parsed_args, $url ) {
-        if ( ! is_string( $url ) ) {
-            return $response;
-        }
-        // Redact Anthropic API key
-        if ( strpos( $url, 'api.anthropic.com' ) !== false ) {
-            if ( isset( $parsed_args['headers']['x-api-key'] ) ) {
-                $parsed_args['headers']['x-api-key'] = '***REDACTED***';
-            }
-        }
-        return $response;
-    }
-
     public function sanitize_options( array $input ): array {
         if (!is_array($input)) {
             $input = array();
         }
-        
+
         $output = array();
 
-        $output['anthropic_api_key'] = isset($input['anthropic_api_key']) ? sanitize_text_field( trim($input['anthropic_api_key']) ) : '';
-        $output['model']     = isset($input['model']) ? sanitize_text_field($input['model']) : '';
+        $old_options = get_option( $this->option_name, array() );
+        if ( ! is_array( $old_options ) ) {
+            $old_options = array();
+        }
+
+        // API key: when the key comes from wp-config.php it is never written
+        // to the database (the settings form submits an empty value, and the
+        // analytics-page form omits the field entirely). A form that omits
+        // the field keeps whatever key is already stored instead of erasing it.
+        if ( $this->is_anthropic_key_from_constant() ) {
+            $output['anthropic_api_key'] = '';
+        } elseif ( isset( $input['anthropic_api_key'] ) ) {
+            $output['anthropic_api_key'] = sanitize_text_field( trim( $input['anthropic_api_key'] ) );
+        } else {
+            $output['anthropic_api_key'] = isset( $old_options['anthropic_api_key'] ) ? (string) $old_options['anthropic_api_key'] : '';
+        }
+
+        $output['model'] = isset( $input['model'] ) ? sanitize_text_field( $input['model'] ) : '';
+        if ( '' === $output['model'] ) {
+            $output['model'] = ! empty( $old_options['model'] ) ? (string) $old_options['model'] : RIVIANTRACKR_DEFAULT_MODEL;
+        }
+
+        // Effort: low | medium | high (sent only to models that accept it)
+        $effort_choices   = array( 'low', 'medium', 'high' );
+        $output['effort'] = isset( $input['effort'] ) && in_array( $input['effort'], $effort_choices, true )
+            ? $input['effort']
+            : ( isset( $old_options['effort'] ) && in_array( $old_options['effort'], $effort_choices, true ) ? $old_options['effort'] : RIVIANTRACKR_DEFAULT_EFFORT );
+
         $output['max_posts'] = isset($input['max_posts']) ? max(1, intval($input['max_posts'])) : 20;
 
         // Max tokens: min 500, max 16000, default 4000
@@ -645,8 +658,6 @@ class RivianTrackr_AI_Search_Summary {
             : RIVIANTRACKR_MAX_TOKENS;
 
         $output['enable'] = isset($input['enable']) && $input['enable'] ? 1 : 0;
-
-        $old_options = get_option( $this->option_name, array() );
 
         // Validate Anthropic API key when it changes
         $old_anthropic_key = isset( $old_options['anthropic_api_key'] ) ? $old_options['anthropic_api_key'] : '';
@@ -783,6 +794,7 @@ class RivianTrackr_AI_Search_Summary {
         $old_model       = isset( $old_options['model'] ) ? $old_options['model'] : '';
         $old_show_sources = isset( $old_options['show_sources'] ) ? $old_options['show_sources'] : 0;
         $old_max_tokens  = isset( $old_options['max_tokens'] ) ? (int) $old_options['max_tokens'] : RIVIANTRACKR_MAX_TOKENS;
+        $old_effort      = isset( $old_options['effort'] ) ? $old_options['effort'] : RIVIANTRACKR_DEFAULT_EFFORT;
 
         $cache_invalidating_change = false;
         if ( $output['model'] !== $old_model && ! empty( $output['model'] ) ) {
@@ -792,6 +804,9 @@ class RivianTrackr_AI_Search_Summary {
             $cache_invalidating_change = true;
         }
         if ( $output['max_tokens'] !== $old_max_tokens ) {
+            $cache_invalidating_change = true;
+        }
+        if ( $output['effort'] !== $old_effort ) {
             $cache_invalidating_change = true;
         }
 
@@ -994,7 +1009,8 @@ class RivianTrackr_AI_Search_Summary {
                 'sanitize_callback' => array( $this, 'sanitize_options' ),
                 'default' => array(
                     'anthropic_api_key'    => '',
-                    'model'                => '',
+                    'model'                => RIVIANTRACKR_DEFAULT_MODEL,
+                    'effort'               => RIVIANTRACKR_DEFAULT_EFFORT,
                     'max_posts'            => 20,
                     'enable'               => 0,
                     'max_calls_per_minute' => 30,
@@ -1020,74 +1036,7 @@ class RivianTrackr_AI_Search_Summary {
      * Test an Anthropic API key by making a minimal messages request.
      */
     private function test_anthropic_api_key( string $api_key ): array {
-        if ( empty( $api_key ) ) {
-            return array(
-                'success' => false,
-                'message' => 'API key is empty.',
-            );
-        }
-
-        // Use a minimal messages request to validate the key
-        $response = wp_safe_remote_post(
-            'https://api.anthropic.com/v1/messages',
-            array(
-                'headers' => array(
-                    'x-api-key'        => $api_key,
-                    'anthropic-version' => RIVIANTRACKR_ANTHROPIC_API_VERSION,
-                    'Content-Type'     => 'application/json',
-                ),
-                'body'    => wp_json_encode( array(
-                    'model'      => 'claude-haiku-4-5',
-                    'max_tokens' => 1,
-                    'messages'   => array(
-                        array( 'role' => 'user', 'content' => 'Hi' ),
-                    ),
-                ) ),
-                'timeout' => 10,
-            )
-        );
-
-        if ( is_wp_error( $response ) ) {
-            return array(
-                'success' => false,
-                'message' => 'Connection error: ' . $response->get_error_message(),
-            );
-        }
-
-        $code = wp_remote_retrieve_response_code( $response );
-
-        if ( $code === 401 ) {
-            return array(
-                'success' => false,
-                'message' => 'Invalid API key. Please check your Anthropic key and try again.',
-            );
-        }
-
-        if ( $code === 403 ) {
-            return array(
-                'success' => false,
-                'message' => 'API key lacks required permissions. Check your Anthropic Console settings.',
-            );
-        }
-
-        if ( $code === 429 ) {
-            return array(
-                'success' => false,
-                'message' => 'Rate limit exceeded. Your API key works but has hit rate limits.',
-            );
-        }
-
-        if ( $code < 200 || $code >= 300 ) {
-            return array(
-                'success' => false,
-                'message' => 'API error (HTTP ' . $code . '). Please try again later.',
-            );
-        }
-
-        return array(
-            'success' => true,
-            'message' => 'Anthropic API key is valid and working!',
-        );
+        return $this->api_handler->test_anthropic_key( $api_key );
     }
 
     public function ajax_test_api_key() {
@@ -1569,11 +1518,11 @@ class RivianTrackr_AI_Search_Summary {
         
         <!-- Modal HTML -->
         <div id="riviantrackr-default-css-modal" class="riviantrackr-modal-overlay">
-            <div class="riviantrackr-modal-content">
+            <div class="riviantrackr-modal-content" role="dialog" aria-modal="true" aria-labelledby="riviantrackr-default-css-title" tabindex="-1">
                 <button type="button" id="riviantrackr-close-modal" class="riviantrackr-modal-close" aria-label="Close">×</button>
-                <h2 class="riviantrackr-modal-header">Default CSS Reference</h2>
+                <h2 id="riviantrackr-default-css-title" class="riviantrackr-modal-header">Default CSS Reference</h2>
                 <p class="riviantrackr-modal-description">
-                    Copy and modify these default styles to customize your AI search summary.
+                    These are the styles the plugin ships with. Copy the rules you want to change into the Custom CSS box.
                 </p>
                 <pre class="riviantrackr-modal-code"><code><?php echo esc_html( $this->get_default_css() ); ?></code></pre>
             </div>
@@ -1581,117 +1530,19 @@ class RivianTrackr_AI_Search_Summary {
         <?php
     }
 
-    private function get_default_css() {
-        return '@keyframes riviantrackr-spin {
-  to { transform: rotate(360deg); }
-}
-
-.riviantrackr-summary-content {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
-.riviantrackr-spinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid rgba(58,62,69,0.5);
-  border-top-color: #fba919;
-  display: inline-block;
-  animation: riviantrackr-spin 0.7s linear infinite;
-  flex-shrink: 0;
-}
-
-.riviantrackr-loading-text {
-  margin: 0;
-  opacity: 0.8;
-}
-
-.riviantrackr-summary-content.riviantrackr-loaded {
-  display: block;
-}
-
-.riviantrackr-ai-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid #3a3e45;
-  background: #121418;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-  opacity: 0.95;
-}
-
-.riviantrackr-ai-mark {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  border: 1px solid #3a3e45;
-  position: relative;
-  flex-shrink: 0;
-}
-
-.riviantrackr-ai-mark::after {
-  content: "";
-  position: absolute;
-  inset: 2px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #fba919, #d2de24, #86c440, #5ec095, #34c5ec, #2b96d2, #3571b8, #534da0, #d11d55, #ef3d6c, #ed1a36, #ee383a);
-}
-
-.riviantrackr-sources {
-  margin-top: 1rem;
-  font-size: 0.85rem;
-}
-
-.riviantrackr-sources-toggle {
-  border: none;
-  background: none;
-  padding: 0;
-  margin: 0 0 0.4rem 0;
-  font-size: 0.85rem;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  opacity: 0.95;
-  color: #ece9e4;
-}
-
-.riviantrackr-sources-list {
-  margin: 0;
-  padding-left: 1.1rem;
-  font-size: 0.85rem;
-}
-
-.riviantrackr-sources-list li {
-  margin-bottom: 0.4rem;
-}
-
-.riviantrackr-sources-list li:last-child {
-  margin-bottom: 0;
-}
-
-.riviantrackr-sources-list a {
-  color: #fba919;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.riviantrackr-sources-list a:hover {
-  opacity: 0.9;
-}
-
-.riviantrackr-sources-list span {
-  display: block;
-  opacity: 0.8;
-  color: #ece9e4;
-}';
+    /**
+     * The stylesheet that ships with the plugin, for the CSS reference modal.
+     *
+     * Reads the real frontend stylesheet so the reference can never drift
+     * from what is actually loaded on the site.
+     */
+    private function get_default_css(): string {
+        $file = plugin_dir_path( __FILE__ ) . 'assets/riviantrackr.css';
+        if ( ! is_readable( $file ) ) {
+            return '/* assets/riviantrackr.css could not be read. */';
+        }
+        $css = file_get_contents( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Local plugin asset.
+        return is_string( $css ) ? $css : '';
     }
 
     /**
@@ -1706,6 +1557,7 @@ class RivianTrackr_AI_Search_Summary {
             'claude-opus-4-6',
             'claude-opus-4-7',
             'claude-opus-4-8',
+            'claude-opus-5',
         );
     }
 
@@ -1974,7 +1826,7 @@ class RivianTrackr_AI_Search_Summary {
                                     Test Connection
                                 </button>
                             </div>
-                            <div id="riviantrackr-test-anthropic-result" style="margin-top: 12px;"></div>
+                            <div id="riviantrackr-test-anthropic-result" role="status" aria-live="polite" style="margin-top: 12px;"></div>
                         </div>
                     </div>
                 </div>
@@ -2127,9 +1979,9 @@ class RivianTrackr_AI_Search_Summary {
                                 $models = array_unique( $models );
                                 sort( $models );
                                 ?>
-                                <select name="<?php echo esc_attr( $this->option_name ); ?>[model]">
+                                <select id="riviantrackr-model" name="<?php echo esc_attr( $this->option_name ); ?>[model]">
                                     <?php foreach ( $models as $model_id ) : ?>
-                                        <option value="<?php echo esc_attr( $model_id ); ?>" 
+                                        <option value="<?php echo esc_attr( $model_id ); ?>"
                                                 <?php selected( $options['model'], $model_id ); ?>>
                                             <?php echo esc_html( $model_id ); ?>
                                         </option>
@@ -2142,13 +1994,31 @@ class RivianTrackr_AI_Search_Summary {
                                         data-nonce="<?php echo esc_attr( wp_create_nonce( 'riviantrackr_refresh_models' ) ); ?>">
                                     Refresh Models
                                 </button>
-                                <span id="riviantrackr-refresh-models-result" style="margin-left: 12px;"></span>
+                                <span id="riviantrackr-refresh-models-result" role="status" aria-live="polite" style="margin-left: 12px;"></span>
                             </div>
                             <?php if ( is_array( $cache ) && ! empty( $cache['updated_at'] ) ) : ?>
                                 <div style="margin-top: 8px; font-size: 13px; color: #86868b;">
                                     Last updated: <?php echo esc_html( date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), intval( $cache['updated_at'] ) ) ); ?>
                                 </div>
                             <?php endif; ?>
+                        </div>
+
+                        <!-- Reasoning Effort -->
+                        <div class="riviantrackr-field">
+                            <div class="riviantrackr-field-label">
+                                <label for="riviantrackr-effort">Reasoning Effort</label>
+                            </div>
+                            <div class="riviantrackr-field-description">
+                                How much thinking the model spends on each summary. Claude Sonnet 5 and Opus 5 think by default, and those thinking tokens count against Max Response Tokens. <strong>Low</strong> is the right setting for search summaries: faster, cheaper, and far less likely to be truncated. Applies to Claude Opus 4.5+ and Sonnet 4.6+; Haiku ignores it.
+                            </div>
+                            <div class="riviantrackr-field-input">
+                                <?php $current_effort = isset( $options['effort'] ) ? $options['effort'] : RIVIANTRACKR_DEFAULT_EFFORT; ?>
+                                <select id="riviantrackr-effort" name="<?php echo esc_attr( $this->option_name ); ?>[effort]">
+                                    <option value="low" <?php selected( $current_effort, 'low' ); ?>>Low (recommended)</option>
+                                    <option value="medium" <?php selected( $current_effort, 'medium' ); ?>>Medium</option>
+                                    <option value="high" <?php selected( $current_effort, 'high' ); ?>>High (API default)</option>
+                                </select>
+                            </div>
                         </div>
 
                         <!-- Max Posts -->
@@ -2219,7 +2089,7 @@ class RivianTrackr_AI_Search_Summary {
                                 <label>Max Response Tokens</label>
                             </div>
                             <div class="riviantrackr-field-description">
-                                Maximum tokens in the AI response (500 &ndash; 16,000). Lower values = shorter answers and lower cost.
+                                Maximum tokens in the AI response (500 &ndash; 16,000). Lower values = shorter answers and lower cost. On models that think by default (Sonnet 5, Opus 5) this budget also covers thinking tokens, so keep Reasoning Effort on Low or raise this value.
                             </div>
                             <div class="riviantrackr-field-input">
                                 <input type="number"
@@ -2264,7 +2134,7 @@ class RivianTrackr_AI_Search_Summary {
                                         data-nonce="<?php echo esc_attr( wp_create_nonce( 'riviantrackr_clear_cache' ) ); ?>">
                                     Clear Cache Now
                                 </button>
-                                <span id="riviantrackr-clear-cache-result" style="margin-left: 12px;"></span>
+                                <span id="riviantrackr-clear-cache-result" role="status" aria-live="polite" style="margin-left: 12px;"></span>
                             </div>
                         </div>
 
@@ -2390,7 +2260,7 @@ class RivianTrackr_AI_Search_Summary {
                     </div>
                     <div class="riviantrackr-section-content">
                         <div id="riviantrackr-advanced-toggle-wrap" style="padding: 20px 24px;">
-                            <button type="button" id="riviantrackr-advanced-toggle" class="riviantrackr-button riviantrackr-button-secondary" style="font-size: 13px; padding: 8px 16px;">
+                            <button type="button" id="riviantrackr-advanced-toggle" class="riviantrackr-button riviantrackr-button-secondary" style="font-size: 13px; padding: 8px 16px;" aria-expanded="false" aria-controls="riviantrackr-advanced-settings">
                                 Show Advanced Settings
                             </button>
                         </div>
@@ -2502,7 +2372,7 @@ class RivianTrackr_AI_Search_Summary {
                                 <button type="button" id="riviantrackr-gdpr-purge-btn" class="riviantrackr-button riviantrackr-button-secondary" style="font-size: 13px; padding: 6px 12px;">
                                     Anonymize Existing Queries
                                 </button>
-                                <span id="riviantrackr-gdpr-purge-result" style="font-size: 13px; margin-left: 8px;"></span>
+                                <span id="riviantrackr-gdpr-purge-result" role="status" aria-live="polite" style="font-size: 13px; margin-left: 8px;"></span>
                                 <p style="font-size: 12px; color: #6e6e73; margin-top: 4px;">
                                     Retroactively replace all stored query text with SHA-256 hashes. This cannot be undone.
                                 </p>
@@ -2665,12 +2535,7 @@ class RivianTrackr_AI_Search_Summary {
                 $base_url = add_query_arg( $param, absint( wp_unslash( $_GET[ $param ] ) ), $base_url );
             }
         }
-        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only filter param on admin page
-        if ( isset( $_GET['hide_zero'] ) ) {
-            if ( absint( wp_unslash( $_GET['hide_zero'] ) ) === 1 ) {
-                $base_url = add_query_arg( 'hide_zero', '1', $base_url );
-            }
-        } elseif ( get_user_meta( get_current_user_id(), 'riviantrackr_hide_zero', true ) === '1' ) {
+        if ( $this->analytics_hide_zero_requested() ) {
             $base_url = add_query_arg( 'hide_zero', '1', $base_url );
         }
         // phpcs:enable WordPress.Security.NonceVerification.Recommended
@@ -2706,18 +2571,37 @@ class RivianTrackr_AI_Search_Summary {
         <?php
     }
 
+    /**
+     * Resolve the "hide zero-result queries" filter for the analytics page.
+     *
+     * The filter is a plain link, so the preference is only persisted to user
+     * meta when the link carries a valid nonce; without one it still applies
+     * to the current view but is not remembered.
+     *
+     * @return bool True when zero-result rows should be hidden.
+     */
+    private function analytics_hide_zero_requested(): bool {
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended -- Read-only filter param; persistence is nonce-gated below.
+        if ( ! isset( $_GET['hide_zero'] ) ) {
+            return get_user_meta( get_current_user_id(), 'riviantrackr_hide_zero', true ) === '1';
+        }
+
+        $hide_zero = absint( wp_unslash( $_GET['hide_zero'] ) ) === 1;
+        $nonce     = isset( $_GET['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ) : '';
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
+        if ( $nonce && wp_verify_nonce( $nonce, 'riviantrackr_hide_zero' ) ) {
+            update_user_meta( get_current_user_id(), 'riviantrackr_hide_zero', $hide_zero ? '1' : '0' );
+        }
+
+        return $hide_zero;
+    }
+
     private function render_analytics_content() {
         global $wpdb;
         $table_name = self::get_logs_table_name();
 
-        // Sticky filter: remember preference in user meta.
-        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only filter param on admin page
-        if ( isset( $_GET['hide_zero'] ) ) {
-            $hide_zero = absint( wp_unslash( $_GET['hide_zero'] ) ) === 1;
-            update_user_meta( get_current_user_id(), 'riviantrackr_hide_zero', $hide_zero ? '1' : '0' );
-        } else {
-            $hide_zero = get_user_meta( get_current_user_id(), 'riviantrackr_hide_zero', true ) === '1';
-        }
+        // Sticky filter: remember preference in user meta (nonce-gated).
+        $hide_zero    = $this->analytics_hide_zero_requested();
         $where_clause = $hide_zero ? ' WHERE results_count > 0' : '';
 
         // Get estimated row count to optimize queries for large datasets
@@ -2916,12 +2800,12 @@ class RivianTrackr_AI_Search_Summary {
             if ( $hide_zero ) {
                 $filter_label = 'Showing results with matches only';
             } else {
-                $filter_url = add_query_arg( 'hide_zero', '1', $filter_url );
+                $filter_url = wp_nonce_url( add_query_arg( 'hide_zero', '1', $filter_url ), 'riviantrackr_hide_zero' );
                 $filter_label = 'Hide zero-result queries';
             }
             ?>
             <?php if ( $hide_zero ) : ?>
-                <a href="<?php echo esc_url( admin_url( 'admin.php?page=riviantrackr-analytics&hide_zero=0' ) ); ?>"
+                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=riviantrackr-analytics&hide_zero=0' ), 'riviantrackr_hide_zero' ) ); ?>"
                    style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 13px; font-weight: 500; color: #1e40af; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 6px; text-decoration: none; cursor: pointer;">
                     &#10003; Hiding <?php echo number_format( $no_results_count ); ?> zero-result entries &mdash; click to show all
                 </a>
@@ -3238,13 +3122,13 @@ class RivianTrackr_AI_Search_Summary {
                                 class="riviantrackr-button riviantrackr-button-secondary" style="font-size: 13px; padding: 6px 12px; display: none;">
                             Delete Selected
                         </button>
-                        <span id="riviantrackr-bulk-delete-result" style="font-size: 13px;"></span>
+                        <span id="riviantrackr-bulk-delete-result" role="status" aria-live="polite" style="font-size: 13px;"></span>
                     </div>
                     <div class="riviantrackr-table-wrapper">
                         <table class="riviantrackr-table riviantrackr-table-compact" id="riviantrackr-events-table">
                             <thead>
                                 <tr>
-                                    <th style="width: 32px; text-align: center;"><input type="checkbox" id="riviantrackr-select-all" title="Select all" /></th>
+                                    <th style="width: 32px; text-align: center;"><input type="checkbox" id="riviantrackr-select-all" title="Select all" aria-label="Select all log entries on this page" /></th>
                                     <th>Query</th>
                                     <th>Model</th>
                                     <th>Status</th>
@@ -3257,7 +3141,7 @@ class RivianTrackr_AI_Search_Summary {
                             <tbody>
                                 <?php foreach ( $recent_events as $event ) : ?>
                                     <tr>
-                                        <td style="text-align: center;"><input type="checkbox" class="riviantrackr-row-check" value="<?php echo esc_attr( $event->id ); ?>" /></td>
+                                        <td style="text-align: center;"><input type="checkbox" class="riviantrackr-row-check" value="<?php echo esc_attr( $event->id ); ?>" aria-label="<?php echo esc_attr( 'Select log entry: ' . $event->search_query ); ?>" /></td>
                                         <td class="riviantrackr-query-cell" title="<?php echo esc_attr( $event->search_query ); ?>"><?php echo esc_html( $event->search_query ); ?></td>
                                         <td class="riviantrackr-model-cell" style="font-size: 12px; font-family: monospace; white-space: nowrap;"><?php
                                             echo ! empty( $event->ai_model ) ? esc_html( $event->ai_model ) : '&mdash;';
@@ -3344,7 +3228,7 @@ class RivianTrackr_AI_Search_Summary {
                                 data-nonce="<?php echo esc_attr( wp_create_nonce( 'riviantrackr_purge_spam' ) ); ?>">
                             Scan &amp; Remove Spam
                         </button>
-                        <span id="riviantrackr-purge-spam-result"></span>
+                        <span id="riviantrackr-purge-spam-result" role="status" aria-live="polite"></span>
                     </div>
                 </div>
 
@@ -3384,9 +3268,15 @@ class RivianTrackr_AI_Search_Summary {
                     <form method="post" action="options.php" style="margin-top: 12px;">
                         <?php settings_fields( 'riviantrackr_group' ); ?>
                         <?php
-                        // Preserve all existing options as hidden fields
+                        // Preserve all existing options as hidden fields.
+                        // The API key is deliberately left out: get_options()
+                        // substitutes the wp-config.php constant, and echoing
+                        // that here would write the secret into the database
+                        // on save. sanitize_options() keeps the stored key
+                        // when the field is absent.
+                        $skip_hidden = array( 'auto_purge_enabled', 'auto_purge_days', 'anthropic_api_key', 'anthropic_api_key_valid' );
                         foreach ( $options as $key => $value ) {
-                            if ( $key !== 'auto_purge_enabled' && $key !== 'auto_purge_days' ) {
+                            if ( ! in_array( $key, $skip_hidden, true ) ) {
                                 if ( is_array( $value ) ) {
                                     foreach ( $value as $item ) {
                                         echo '<input type="hidden" name="' . esc_attr( $this->option_name ) . '[' . esc_attr( $key ) . '][]" value="' . esc_attr( $item ) . '" />';
@@ -3667,25 +3557,59 @@ class RivianTrackr_AI_Search_Summary {
         <?php
     }
 
+    /**
+     * Whether the current request is a frontend search page the widget runs on.
+     */
+    private function is_summary_search_page(): bool {
+        if ( is_admin() || ! is_search() || is_feed() ) {
+            return false;
+        }
+        $options = $this->get_options();
+        return ! empty( $options['enable'] ) && ! empty( $this->get_active_api_key() );
+    }
+
+    /**
+     * Keep search result pages out of page caches.
+     *
+     * The bot challenge token (10-minute lifetime) and the REST nonce are
+     * rendered into the page. A cached copy served later would hand every
+     * visitor an expired token and a 403 from the summary endpoint.
+     */
+    public function prevent_search_page_caching() {
+        if ( ! $this->is_summary_search_page() ) {
+            return;
+        }
+        if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+            define( 'DONOTCACHEPAGE', true );
+        }
+        nocache_headers();
+    }
+
+    /**
+     * Add a preconnect hint for the REST API origin on search pages.
+     *
+     * @param array  $urls          Resource hint URLs.
+     * @param string $relation_type The relation type (preconnect, dns-prefetch, ...).
+     * @return array
+     */
+    public function add_rest_resource_hints( $urls, $relation_type ) {
+        if ( 'preconnect' !== $relation_type || ! $this->is_summary_search_page() ) {
+            return $urls;
+        }
+        $parsed = wp_parse_url( rest_url() );
+        if ( ! empty( $parsed['host'] ) ) {
+            $origin = ( ! empty( $parsed['scheme'] ) ? $parsed['scheme'] : 'https' ) . '://' . $parsed['host'];
+            $urls[] = array( 'href' => $origin, 'crossorigin' => 'anonymous' );
+        }
+        return $urls;
+    }
+
     public function enqueue_frontend_assets() {
-        if ( is_admin() || ! is_search() ) {
+        if ( ! $this->is_summary_search_page() ) {
             return;
         }
 
         $options = $this->get_options();
-        if ( empty( $options['enable'] ) || empty( $this->get_active_api_key() ) ) {
-            return;
-        }
-
-        // Add preconnect hint for REST API (helps with subdomains or CDN setups)
-        $rest_url = rest_url();
-        $parsed = wp_parse_url( $rest_url );
-        if ( ! empty( $parsed['host'] ) ) {
-            $origin = ( ! empty( $parsed['scheme'] ) ? $parsed['scheme'] : 'https' ) . '://' . $parsed['host'];
-            echo '<link rel="preconnect" href="' . esc_url( $origin ) . '" crossorigin>' . "\n";
-            echo '<link rel="dns-prefetch" href="' . esc_url( $origin ) . '">' . "\n";
-        }
-
         $version = RIVIANTRACKR_VERSION;
 
         wp_enqueue_style(
@@ -3736,9 +3660,6 @@ class RivianTrackr_AI_Search_Summary {
                 'botTokenTs'       => $bot_challenge_ts,
                 'errorCodes'       => array(
                     'noResults'    => RIVIANTRACKR_ERROR_NO_RESULTS,
-                    'apiError'     => RIVIANTRACKR_ERROR_API_ERROR,
-                    'rateLimited'  => RIVIANTRACKR_ERROR_RATE_LIMITED,
-                    'notConfigured' => RIVIANTRACKR_ERROR_NOT_CONFIGURED,
                     'offTopic'     => RIVIANTRACKR_ERROR_OFF_TOPIC,
                 ),
             )
@@ -3750,7 +3671,7 @@ class RivianTrackr_AI_Search_Summary {
      * is not rendered and JS never fires the REST endpoint.
      */
     public function log_no_results_search() {
-        if ( ! is_search() || is_admin() ) {
+        if ( ! is_search() || is_admin() || is_feed() ) {
             return;
         }
 
@@ -3784,7 +3705,7 @@ class RivianTrackr_AI_Search_Summary {
     }
 
     public function inject_ai_summary_placeholder( $query ) {
-        if ( ! $query->is_main_query() || ! $query->is_search() || is_admin() ) {
+        if ( ! $query->is_main_query() || ! $query->is_search() || is_admin() || is_feed() ) {
             return;
         }
 
@@ -3816,10 +3737,10 @@ class RivianTrackr_AI_Search_Summary {
         $show_badge = isset( $options['show_badge'] ) ? $options['show_badge'] : 0;
         $show_feedback = isset( $options['show_feedback'] ) ? $options['show_feedback'] : 0;
         ?>
-        <div class="riviantrackr-summary" style="margin-bottom: 1.5rem;">
-            <div class="riviantrackr-summary-inner" style="padding: 1.25rem 1.25rem; border-radius: 12px; border-width: 1px; border-style: solid; display:flex; flex-direction:column; gap:0.6rem;">
-                <div class="riviantrackr-summary-header" style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
-                    <h2 style="margin:0; font-size:1.1rem;">
+        <div class="riviantrackr-summary">
+            <div class="riviantrackr-summary-inner">
+                <div class="riviantrackr-summary-header">
+                    <h2>
                         AI summary for "<?php echo esc_html( $search_query ); ?>"
                     </h2>
                     <?php if ( $show_badge ) : ?>
@@ -3830,32 +3751,33 @@ class RivianTrackr_AI_Search_Summary {
                     <?php endif; ?>
                 </div>
 
-                <div id="riviantrackr-search-summary-content" class="riviantrackr-search-summary-content" aria-live="polite">
-                    <span class="riviantrackr-spinner" role="status" aria-label="Loading AI summary"></span>
-                    <p class="riviantrackr-loading-text">Generating summary based on your search and <?php echo esc_html( $site_name ); ?> articles...</p>
+                <div id="riviantrackr-search-summary-content" class="riviantrackr-search-summary-content" aria-live="polite" aria-busy="true">
+                    <span class="riviantrackr-spinner" aria-hidden="true"></span>
+                    <p class="riviantrackr-loading-text" role="status">Generating summary based on your search and <?php echo esc_html( $site_name ); ?> articles...</p>
+                    <noscript><p class="riviantrackr-loading-text">AI summaries need JavaScript. Enable it to see a summary of the matching articles.</p></noscript>
                 </div>
                 <input type="text" name="riviantrackr_website_url" id="riviantrackr-hp" value="" autocomplete="off" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px;top:-9999px;height:0;width:0;overflow:hidden;opacity:0;pointer-events:none;" />
 
                 <?php if ( $show_feedback ) : ?>
-                <div id="riviantrackr-feedback" class="riviantrackr-feedback" style="display:none; margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid rgba(128,128,128,0.3);">
-                    <div class="riviantrackr-feedback-prompt" style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
-                        <span style="font-size:0.85rem;">Was this summary helpful?</span>
-                        <div class="riviantrackr-feedback-buttons" style="display:flex; gap:0.5rem;">
-                            <button type="button" class="riviantrackr-feedback-btn" data-helpful="1" aria-label="Yes, helpful" style="padding:0.25rem 0.75rem; border:1px solid currentColor; border-radius:4px; background:transparent; color:inherit; cursor:pointer; font-size:0.85rem;">
+                <div id="riviantrackr-feedback" class="riviantrackr-feedback" hidden>
+                    <div class="riviantrackr-feedback-prompt">
+                        <span>Was this summary helpful?</span>
+                        <div class="riviantrackr-feedback-buttons">
+                            <button type="button" class="riviantrackr-feedback-btn" data-helpful="1" aria-label="Yes, helpful">
                                 &#128077; Yes
                             </button>
-                            <button type="button" class="riviantrackr-feedback-btn" data-helpful="0" aria-label="No, not helpful" style="padding:0.25rem 0.75rem; border:1px solid currentColor; border-radius:4px; background:transparent; color:inherit; cursor:pointer; font-size:0.85rem;">
+                            <button type="button" class="riviantrackr-feedback-btn" data-helpful="0" aria-label="No, not helpful">
                                 &#128078; No
                             </button>
                         </div>
                     </div>
-                    <div class="riviantrackr-feedback-thanks" style="display:none; font-size:0.85rem;">
+                    <div class="riviantrackr-feedback-thanks" role="status" hidden>
                         Thanks for your feedback!
                     </div>
                 </div>
                 <?php endif; ?>
 
-                <div class="riviantrackr-disclaimer" style="margin-top:0.75rem; font-size:0.75rem; line-height:1.4; opacity:0.65;">
+                <div class="riviantrackr-disclaimer">
                     AI summaries are generated automatically based on <?php echo esc_html( $site_name ); ?> articles and may be inaccurate or incomplete. Always verify important details.
                 </div>
             </div>
@@ -4215,20 +4137,9 @@ class RivianTrackr_AI_Search_Summary {
             );
         }
 
-        // Duplicate query throttling — block same query from same IP within 5 min
-        $query = $request->get_param( 'q' );
-        if ( is_string( $query ) && ! empty( $query ) ) {
-            if ( $this->rate_limiter->is_duplicate_query( $client_ip, $query ) ) {
-                return new WP_Error(
-                    RIVIANTRACKR_ERROR_RATE_LIMITED,
-                    'This query was recently processed. Please wait before searching again.',
-                    array(
-                        'status'      => 429,
-                        'retry_after' => 300,
-                    )
-                );
-            }
-        }
+        // The duplicate-query throttle runs in rest_get_summary() after the
+        // cache lookup, so a repeat of a cached search is served from cache
+        // instead of being rejected with a 429.
 
         return true;
     }
@@ -4408,14 +4319,19 @@ class RivianTrackr_AI_Search_Summary {
             ? $options['post_types']
             : 'any';
 
-        // Single optimized query that gets all posts sorted by relevance and recency
+        // Single query for the newest matching posts. Only post rows are
+        // needed here, so skip the found-rows count and meta/term cache fills.
         $search_args = array(
-            's'              => $search_query,
-            'post_type'      => $post_types,
-            'posts_per_page' => $max_posts,
-            'post_status'    => 'publish',
-            'orderby'        => 'date',
-            'order'          => 'DESC',
+            's'                      => $search_query,
+            'post_type'              => $post_types,
+            'posts_per_page'         => $max_posts,
+            'post_status'            => 'publish',
+            'orderby'                => 'date',
+            'order'                  => 'DESC',
+            'no_found_rows'          => true,
+            'update_post_meta_cache' => false,
+            'update_post_term_cache' => false,
+            'ignore_sticky_posts'    => true,
         );
 
         $search_results = new WP_Query( $search_args );
@@ -4424,7 +4340,7 @@ class RivianTrackr_AI_Search_Summary {
 
         if ( $search_results->have_posts() ) {
             foreach ( $search_results->posts as $post ) {
-                $content = wp_strip_all_tags( $post->post_content );
+                $content = wp_strip_all_tags( strip_shortcodes( $post->post_content ) );
                 
                 // Use smart truncation for better sentence boundaries
                 $content_length    = isset( $options['content_length'] ) ? (int) $options['content_length'] : RIVIANTRACKR_CONTENT_LENGTH;
@@ -4465,6 +4381,24 @@ class RivianTrackr_AI_Search_Summary {
         $cache_hit     = null;
         $active_model  = ! empty( $options['model'] ) ? $options['model'] : null;
         $start_time    = microtime( true );
+
+        // Duplicate-query throttle: the same query from the same IP within
+        // five minutes only costs an API call when the summary is not cached,
+        // so check the cache first and throttle only a genuine miss. Admins
+        // bypass this like the other anti-abuse checks.
+        if ( ! current_user_can( 'manage_options' ) && null === $this->cache_manager->get( $this->build_summary_cache_key( $search_query ) ) ) {
+            if ( $this->rate_limiter->is_duplicate_query( $this->get_client_ip(), $search_query ) ) {
+                return new WP_Error(
+                    RIVIANTRACKR_ERROR_RATE_LIMITED,
+                    'This query was recently processed. Please wait before searching again.',
+                    array(
+                        'status'      => 429,
+                        'retry_after' => 300,
+                    )
+                );
+            }
+        }
+
         $ai_data       = $this->get_ai_data_for_search( $search_query, $posts_for_ai, $ai_error, $cache_hit );
         $response_time_ms = (int) round( ( microtime( true ) - $start_time ) * 1000 );
 
@@ -4526,6 +4460,25 @@ class RivianTrackr_AI_Search_Summary {
         return $this->rate_limiter->is_ai_call_rate_limited( $limit );
     }
 
+    /**
+     * Build the server cache key for a search query under the current settings.
+     *
+     * @param string $search_query Raw search query.
+     * @return string Cache key.
+     */
+    private function build_summary_cache_key( string $search_query ): string {
+        $options        = $this->get_options();
+        $content_length = isset( $options['content_length'] ) ? (int) $options['content_length'] : RIVIANTRACKR_CONTENT_LENGTH;
+
+        return $this->cache_manager->build_key(
+            'anthropic',
+            (string) $options['model'],
+            (int) $options['max_posts'],
+            $content_length,
+            strtolower( trim( $search_query ) )
+        );
+    }
+
     private function get_ai_data_for_search( $search_query, $posts_for_ai, &$ai_error = '', &$cache_hit = null ) {
         $options    = $this->get_options();
         $active_key = $this->get_active_api_key();
@@ -4536,16 +4489,7 @@ class RivianTrackr_AI_Search_Summary {
             return null;
         }
 
-        $normalized_query = strtolower( trim( $search_query ) );
-        $content_length   = isset( $options['content_length'] ) ? (int) $options['content_length'] : RIVIANTRACKR_CONTENT_LENGTH;
-
-        $cache_key = $this->cache_manager->build_key(
-            'anthropic',
-            $options['model'],
-            (int) $options['max_posts'],
-            $content_length,
-            $normalized_query
-        );
+        $cache_key = $this->build_summary_cache_key( (string) $search_query );
 
         $cached_data = $this->cache_manager->get( $cache_key );
         if ( $cached_data !== null ) {
@@ -4675,7 +4619,7 @@ class RivianTrackr_AI_Search_Summary {
         // Validate time_unit
         $time_unit = in_array( $atts['time_unit'], array( 'hours', 'days' ), true ) ? $atts['time_unit'] : 'hours';
 
-        return $this->render_trending_searches( (int) $atts['limit'], $atts['title'], $atts['subtitle'], $atts['color'], $atts['font_color'], (int) $atts['time_period'], $time_unit );
+        return $this->render_trending_searches( (int) $atts['limit'], $atts['title'], $atts['subtitle'], (string) $atts['color'], (string) $atts['font_color'], (int) $atts['time_period'], $time_unit );
     }
 
     /**
@@ -4706,6 +4650,10 @@ class RivianTrackr_AI_Search_Summary {
         $keywords = $this->get_trending_keywords( $limit, $time_period, $time_unit );
         $options  = $this->get_options();
 
+        // Colors end up inside style="" attributes, so only accept hex values.
+        $bg_color   = sanitize_hex_color( (string) $bg_color );
+        $font_color = sanitize_hex_color( (string) $font_color );
+
         // Use provided background color, fall back to accent color from settings
         if ( empty( $bg_color ) ) {
             $bg_color = isset( $options['color_accent'] ) ? $options['color_accent'] : '#fba919';
@@ -4726,8 +4674,8 @@ class RivianTrackr_AI_Search_Summary {
         }
 
         // Font Awesome icon (primary) and SVG fallback
-        $icon_fa = '<i class="fa-solid fa-magnifying-glass riviantrackr-trending-fa-icon" style="font-size: 32px; opacity: 0.9; flex-shrink: 0; width: 48px; text-align: center; display: none;"></i>';
-        $icon_svg = '<svg class="riviantrackr-trending-svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width: 32px; height: 32px; opacity: 0.9;"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>';
+        $icon_fa = '<i class="fa-solid fa-magnifying-glass riviantrackr-trending-fa-icon" aria-hidden="true" style="font-size: 32px; opacity: 0.9; flex-shrink: 0; width: 48px; text-align: center; display: none;"></i>';
+        $icon_svg = '<svg class="riviantrackr-trending-svg-icon" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width: 32px; height: 32px; opacity: 0.9;"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>';
 
         $html = '<div class="riviantrackr-trending-widget" style="
             background: ' . esc_attr( $bg_color ) . ';
@@ -4797,7 +4745,6 @@ class RivianTrackr_AI_Search_Summary {
                 padding: 10px 14px;
                 background: rgba(0, 0, 0, 0.08);
                 border-radius: 12px;
-                transition: background 0.15s ease;
                 font-size: 15px;
                 font-weight: 500;
                 overflow: hidden;
@@ -4810,7 +4757,12 @@ class RivianTrackr_AI_Search_Summary {
 
         // Enqueue responsive styles via wp_add_inline_style
         $trending_css = '.riviantrackr-trending-widget { max-width: 100%; }
+            .riviantrackr-trending-link { transition: background 0.15s ease; }
             .riviantrackr-trending-link:hover { background: rgba(0, 0, 0, 0.15) !important; }
+            .riviantrackr-trending-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+            @media (prefers-reduced-motion: reduce) {
+                .riviantrackr-trending-link { transition: none; }
+            }
             @media (max-width: 480px) {
                 .riviantrackr-trending-widget { padding: 20px !important; border-radius: 16px !important; }
                 .riviantrackr-trending-header { gap: 12px !important; margin-bottom: 16px !important; }
@@ -4873,10 +4825,12 @@ class RivianTrackr_Trending_Widget extends WP_Widget {
         $time_period = ! empty( $instance['time_period'] ) ? (int) $instance['time_period'] : 24;
         $time_unit   = ! empty( $instance['time_unit'] ) ? $instance['time_unit'] : 'hours';
 
-        // Get the main plugin instance
+        // The main plugin instance is created once at the bottom of this
+        // file; never construct a second one here (its constructor registers
+        // every hook again).
         global $riviantrackr_instance;
-        if ( ! isset( $riviantrackr_instance ) ) {
-            $riviantrackr_instance = new RivianTrackr_AI_Search_Summary();
+        if ( ! $riviantrackr_instance instanceof RivianTrackr_AI_Search_Summary ) {
+            return;
         }
 
         $content = $riviantrackr_instance->render_trending_searches( $limit, $title, $subtitle, $bg_color, $font_color, $time_period, $time_unit );
@@ -5008,4 +4962,4 @@ class RivianTrackr_Trending_Widget extends WP_Widget {
 register_activation_hook( __FILE__, array( 'RivianTrackr_AI_Search_Summary', 'activate' ) );
 register_deactivation_hook( __FILE__, array( 'RivianTrackr_AI_Search_Summary', 'deactivate' ) );
 
-new RivianTrackr_AI_Search_Summary();
+$GLOBALS['riviantrackr_instance'] = new RivianTrackr_AI_Search_Summary();

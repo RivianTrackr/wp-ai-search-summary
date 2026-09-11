@@ -5,6 +5,50 @@ All notable changes to RivianTrackr AI Search Summary will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-09-11
+
+### Fixed
+- **Session-cache hits disabled the sources toggle and feedback buttons.** The cache-hit branch in `riviantrackr.js` returned before the click handlers were registered. Handlers are now bound once, before any content renders.
+- **Repeat searches got a 429 even when cached.** The duplicate-query throttle ran in the REST permission callback, ahead of the cache lookup. It now runs in `rest_get_summary()` only on a genuine cache miss, so a repeat of a cached search (new tab, refresh) is served from cache.
+- **Cached "no results" responses were logged as successful session hits**, inflating the success rate. Only a real summary is logged as a session cache hit.
+- **Feedback errors rendered as "Thanks for your feedback".** The feedback handler now checks the HTTP status and `success` flag; a stale nonce or server error re-enables the buttons with the server's message, and a duplicate vote is reported as such.
+- **The trending widget created a second plugin instance on every render**, re-registering every hook. The main instance is now assigned to `$GLOBALS['riviantrackr_instance']` and the widget uses it.
+- **Empty model after the 2.0 migration.** A non-Claude model was reset to `''` and sent to the API (HTTP 400). `RIVIANTRACKR_DEFAULT_MODEL` now applies whenever the option is empty, in the migration, in `get_options()`, and in `sanitize_options()`.
+- **Retries outlived the browser.** A timed-out API request was retried up to three times with the full timeout each, while the frontend aborts after one. Timeouts are no longer retryable.
+- **Admin AJAX handlers crashed on non-JSON replies** (`0` / `-1` from admin-ajax on an expired session), leaving buttons stuck on "Testing...". All handlers now guard the response shape and render messages as text.
+- **Session cache keys could collide** (base64 with `+/=` stripped). Keys now use `encodeURIComponent` directly.
+- The summary box was injected into RSS search feeds (`is_feed()` checks added).
+- `ensure_logs_table()` wrote a dynamic property (deprecated in PHP 8.2+) that did not reset the analytics table check; it now calls `Analytics::reset_table_check()`.
+- Deactivate/reactivate stopped the scheduled log purge; `activate()` reschedules it when auto-purge is enabled.
+- Uninstall now also removes the `riviantrackr_version` option, the per-user analytics filter preference, and the scheduled purge event.
+- The "Default CSS Reference" modal documented a class that does not exist (`.riviantrackr-summary-content`); it now shows the actual `assets/riviantrackr.css`.
+
+### Security
+- **The analytics-page auto-purge form copied the wp-config.php API key into the database.** Its hidden fields echoed the full options array, including the constant-substituted key, and saving stored the secret in `wp_options`. The key fields are no longer echoed, `sanitize_options()` keeps the stored key when the field is absent, and a key defined via `RIVIANTRACKR_ANTHROPIC_API_KEY` is never written to the database.
+- **Removed the no-op debug-log redaction filter.** `http_api_debug` passes request args by value, so `redact_api_key_in_debug()` never redacted anything. Documentation no longer claims it.
+- Shortcode `color` / `font_color` attributes are validated with `sanitize_hex_color()` before being placed in `style` attributes.
+- The analytics "hide zero-result queries" link is nonce-protected before persisting the preference to user meta.
+- The plugin-page CSP `img-src` now allows `*.gravatar.com` and `s.w.org` so the admin bar avatar and emoji fallbacks load.
+
+### Changed
+- **Search result pages are no longer page-cacheable while the plugin is enabled.** The bot challenge token (10-minute lifetime) and REST nonce are rendered into the page; a cached copy served later handed every visitor a 403. `template_redirect` now defines `DONOTCACHEPAGE` and sends `nocache_headers()` on search pages.
+- The REST preconnect hint is added through `wp_resource_hints` instead of an `echo` inside `wp_enqueue_scripts`.
+- `WP_Query` for the AI context sets `no_found_rows`, skips meta/term cache fills, ignores sticky posts, and strips shortcodes from post content before truncation.
+- Summary widget inline styles moved into `assets/riviantrackr.css` (`.riviantrackr-summary-inner`, `.riviantrackr-feedback*`, `.riviantrackr-disclaimer`, `.riviantrackr-error`, `.riviantrackr-skeleton-status`) so Custom CSS overrides work without `!important`.
+- Design tokens cleaned up in both stylesheets: unused variables removed, `--rtg-radius-pill` is `20px` per the design system (with `--rtg-radius-xs: 4px` for what was actually using it), `--rtg-text-muted` is `#9ca3af`, modal overlay/shadow and the info result colors follow CLAUDE.md, duplicated hardcoded button rules use the tokens, dead selectors removed.
+- Accessibility: loading state uses `aria-busy` and a status paragraph outside the `aria-hidden` skeleton; error paragraphs no longer stack `role="alert"` inside the polite live region; the CSS reference modal has `role="dialog"`, `aria-modal`, focus trap and focus return; the advanced-settings disclosure has `aria-expanded`/`aria-controls`; admin result containers are live regions; log-row checkboxes have accessible names and the select-all box reflects partial selection; trending icons are `aria-hidden`; sources toggle and trending links have `:focus-visible` styles; a `<noscript>` notice replaces the endless spinner; jQuery slide animations respect `prefers-reduced-motion`.
+- Font Awesome detection for the trending widget uses `document.fonts.check()` (falls back to computed style) and re-checks once when fonts are ready.
+- The frontend uses the server's own message for 429/403 responses instead of a hardcoded string. Unused `errorCodes` entries and the unused `window.riviantrackrShowFeedback` global were removed.
+- Dropped the `languages/` stub and `Domain Path` header: the plugin has never wrapped strings in translation functions, and the `.pot` was an empty placeholder.
+- `package.json` gained `build`, `build:js`, `build:css` scripts for regenerating the minified assets.
+
+### Added
+- **Reasoning Effort setting** (AI Configuration → Low / Medium / High, default Low). Sent as `output_config.effort` to models that accept it (Claude Opus 4.5+, Sonnet 4.6+, Fable/Mythos); Haiku ignores it. Claude Sonnet 5 and Opus 5 think by default and those tokens count against Max Response Tokens, so Low keeps search summaries fast, cheap, and complete. Changing it invalidates the summary cache.
+- **Structured outputs.** On models documented as supporting `output_config.format` (Opus 4.1/4.5/4.8/5+, Sonnet 5+, Haiku 4.5+, Fable/Mythos) the response is constrained to the plugin's JSON schema, so brace-extraction parse failures go away. If a model returns HTTP 400 for `output_config`, the request is retried once without it and the model is remembered as unsupported for a day.
+- `stop_reason: "refusal"` is mapped to a content-policy message instead of the generic "not available".
+- `claude-opus-5` added to the fallback model list; `RIVIANTRACKR_DEFAULT_MODEL` (`claude-opus-5`) is used when no model has been saved.
+- `ApiHandler::test_anthropic_key()` is the single API key tester (the duplicate in the main file delegates to it).
+
 ## [2.0.1] - 2026-07-13
 
 ### Fixed

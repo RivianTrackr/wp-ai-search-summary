@@ -52,6 +52,14 @@ class Analytics {
 	}
 
 	/**
+	 * Forget the cached table-existence check (after creating or repairing the table).
+	 */
+	public function reset_table_check(): void {
+		$this->logs_table_checked = false;
+		$this->logs_table_exists  = false;
+	}
+
+	/**
 	 * Log a search event to the database.
 	 *
 	 * @param string      $search_query  The search query.

@@ -1,6 +1,6 @@
 # Plugin Enhancement Roadmap
 
-Comprehensive review of the **AI Search Summary** plugin (last reviewed at v1.4.3, 2026-05-25).
+Comprehensive review of the **AI Search Summary** plugin (last reviewed at v2.1.0, 2026-09-11).
 Organized by category and priority so items can be tackled incrementally.
 
 ---
@@ -23,7 +23,7 @@ Organized by category and priority so items can be tackled incrementally.
 
 ### Medium Priority
 
-- [ ] **1.4 Content Security Policy Tightening**
+- [ ] **1.4 Content Security Policy Tightening** _(2.1.0 widened `img-src` for Gravatar/emoji; nonce-based inline policy still open)_
   Replace `'unsafe-inline'` with nonce-based CSP (`'nonce-{random}'`) for inline scripts and styles.
   _Files:_ `riviantrackr-ai-search-summary.php` (add_security_headers)
 
@@ -175,9 +175,8 @@ Organized by category and priority so items can be tackled incrementally.
 
 ### Medium Priority
 
-- [ ] **6.1 ARIA Attributes & Keyboard Navigation** _(partially shipped)_
-  Already in place: `aria-live="polite"` on status region, `aria-expanded` on sources toggle, `aria-hidden` on skeleton, `aria-label` on modal close and provider badge, `role="alert"` on error states.
-  Still TODO: `role="region"` wrapping the summary container, dedicated `aria-label` on thumbs-up/down feedback buttons, comprehensive keyboard focus management.
+- [x] **6.1 ARIA Attributes & Keyboard Navigation** _(shipped in 2.1.0)_
+  `aria-live`/`aria-busy` on the status region with an announced loading status, `aria-expanded`/`aria-controls` on the sources and advanced-settings toggles, `aria-hidden` on the skeleton and decorative icons, `aria-label` on feedback buttons, dialog semantics with focus trap/return on the CSS reference modal, live regions for admin results, labelled log checkboxes, `:focus-visible` styles, and a `<noscript>` notice.
   _Files:_ `assets/riviantrackr.js`, placeholder HTML in main plugin file
 
 ### Low Priority
@@ -218,5 +217,5 @@ Organized by category and priority so items can be tackled incrementally.
 | Priority | Count | Items |
 |----------|-------|-------|
 | **High** | 7 | 1.1, 1.2, 1.3, 2.1, 4.1, 4.2, 7.1 |
-| **Medium** | 16 | 1.4, 1.5, 1.6, 2.2, 2.3, 2.4, 3.1-3.4, 4.3, 4.4, 5.1, 5.2, 6.1, 7.2 |
-| **Low** | 12 | 1.7, 2.5, 3.5-3.8, 4.5, 4.6, 5.3, 5.4, 6.2, 7.3 _(6.3 shipped)_ |
+| **Medium** | 15 | 1.4, 1.5, 1.6, 2.2, 2.3, 2.4, 3.1-3.4, 4.3, 4.4, 5.1, 5.2, 7.2 |
+| **Low** | 12 | 1.7, 2.5, 3.5-3.8, 4.5, 4.6, 5.3, 5.4, 6.2, 7.3 _(6.1, 6.3 shipped)_ |
