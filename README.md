@@ -1,6 +1,6 @@
 # RivianTrackr AI Search Summary
 
-[![Version](https://img.shields.io/badge/version-2.1.1-blue.svg)](https://github.com/RivianTrackr/riviantrackr-ai-search-summary)
+[![Version](https://img.shields.io/badge/version-2.2.0-blue.svg)](https://github.com/RivianTrackr/riviantrackr-ai-search-summary)
 [![WordPress](https://img.shields.io/badge/WordPress-6.9%2B-blue.svg)](https://wordpress.org/)
 [![PHP](https://img.shields.io/badge/PHP-8.4%2B-purple.svg)](https://php.net/)
 [![License](https://img.shields.io/badge/license-GPL--2.0%2B-green.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
@@ -51,7 +51,7 @@ A powerful WordPress plugin that adds AI-powered summaries to your search result
 
 - **Color Theming** - Customize background, text, accent, and border colors
 - **Custom CSS Editor** - Add your own styles with syntax highlighting
-- **Provider Badge** - Optional "Powered by Anthropic" badge display
+- **Provider Badge** - Optional "Powered by Claude" text badge (no logo; see Anthropic's trademark guidelines)
 - **Feedback Buttons** - Optional thumbs up/down for user feedback on summaries
 - **Sources Display** - Toggle visibility of source articles
 

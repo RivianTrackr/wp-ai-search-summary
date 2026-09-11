@@ -6,7 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Plugin Name: AI Search Summary
  * Description: Add AI-powered summaries to WordPress search results using Anthropic Claude. Non-blocking, with analytics, cache control, and collapsible sources.
- * Version: 2.1.1
+ * Version: 2.2.0
  * Author: RivianTrackr
  * Author URI: https://github.com/RivianTrackr/
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Text Domain: riviantrackr-ai-search-summary
  */
 
-define( 'RIVIANTRACKR_VERSION', '2.1.1' );
+define( 'RIVIANTRACKR_VERSION', '2.2.0' );
 define( 'RIVIANTRACKR_ASSET_SUFFIX', defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? '' : '.min' );
 
 // Load the namespaced class autoloader.
@@ -928,7 +928,7 @@ class RivianTrackr_AI_Search_Summary {
     color: {$accent};
     opacity: 0.8;
 }
-.riviantrackr-sources-list span {
+.riviantrackr-sources-list .riviantrackr-source-excerpt {
     color: {$text};
     opacity: 0.8;
 }
@@ -1884,7 +1884,7 @@ class RivianTrackr_AI_Search_Summary {
                                 <label>Show AI Provider Badge</label>
                             </div>
                             <div class="riviantrackr-field-description">
-                                Display a "Powered by Anthropic" attribution badge on search summaries
+                                Display a "Powered by Claude" attribution badge on search summaries (text only; Anthropic's trademark guidelines do not permit third-party use of its logos)
                             </div>
                             <div class="riviantrackr-toggle-wrapper">
                                 <label class="riviantrackr-toggle">
@@ -3746,13 +3746,19 @@ class RivianTrackr_AI_Search_Summary {
         <div class="riviantrackr-summary">
             <div class="riviantrackr-summary-inner">
                 <div class="riviantrackr-summary-header">
-                    <h2>
-                        AI summary for "<?php echo esc_html( $search_query ); ?>"
-                    </h2>
+                    <div class="riviantrackr-summary-heading">
+                        <span class="riviantrackr-eyebrow">
+                            <svg class="riviantrackr-eyebrow-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4z"/><path d="M19 15l.9 2.6 2.6.9-2.6.9L19 22l-.9-2.6-2.6-.9 2.6-.9z"/></svg>
+                            AI summary
+                        </span>
+                        <h2>
+                            <span class="riviantrackr-summary-for">Results for</span> "<?php echo esc_html( $search_query ); ?>"
+                        </h2>
+                    </div>
                     <?php if ( $show_badge ) : ?>
-                    <span class="riviantrackr-ai-badge" aria-label="Powered by Anthropic">
+                    <span class="riviantrackr-ai-badge" aria-label="Powered by Claude">
                         <span class="riviantrackr-ai-mark" aria-hidden="true"></span>
-                        <span class="riviantrackr-ai-text">Powered by Anthropic</span>
+                        <span class="riviantrackr-ai-text">Powered by Claude</span>
                     </span>
                     <?php endif; ?>
                 </div>
@@ -4447,6 +4453,10 @@ class RivianTrackr_AI_Search_Summary {
 
         $answer_html = wp_kses( $answer_html, $allowed_tags );
 
+        // Wrap the answer so the stylesheet can scope typography and the
+        // entry animation to the model's HTML only.
+        $answer_html = '<div class="riviantrackr-answer">' . $answer_html . '</div>';
+
         // Add sources if enabled in settings
         $show_sources = isset( $options['show_sources'] ) ? $options['show_sources'] : 0;
         if ( $show_sources && ! empty( $sources ) ) {
@@ -4554,42 +4564,67 @@ class RivianTrackr_AI_Search_Summary {
         $sources     = array_slice( $sources, 0, $max_sources );
         $count   = count( $sources );
 
-        $show_label = 'Show sources (' . intval( $count ) . ')';
+        $show_label = 'Show sources';
         $hide_label = 'Hide sources';
+
+        $chevron = '<svg class="riviantrackr-sources-chevron" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
 
         $html  = '<div class="riviantrackr-sources">';
         $html .= '<button type="button" class="riviantrackr-sources-toggle" aria-expanded="false" aria-controls="riviantrackr-sources-list" data-label-show="' . esc_attr( $show_label ) . '" data-label-hide="' . esc_attr( $hide_label ) . '">';
-        $html .= esc_html( $show_label );
+        $html .= $chevron;
+        $html .= '<span class="riviantrackr-sources-label">Sources</span>';
+        $html .= '<span class="riviantrackr-sources-count" aria-label="' . esc_attr( $count . ' sources' ) . '">' . intval( $count ) . '</span>';
         $html .= '</button>';
-        $html .= '<ul id="riviantrackr-sources-list" class="riviantrackr-sources-list" hidden>';
+        $html .= '<ol id="riviantrackr-sources-list" class="riviantrackr-sources-list" hidden>';
 
+        $rank = 0;
         foreach ( $sources as $src ) {
-            $title   = isset( $src['title'] ) ? $src['title'] : '';
-            $url     = isset( $src['url'] ) ? $src['url'] : '';
-            $excerpt = isset( $src['excerpt'] ) ? $src['excerpt'] : '';
+            $title   = isset( $src['title'] ) ? (string) $src['title'] : '';
+            $url     = isset( $src['url'] ) ? (string) $src['url'] : '';
+            $excerpt = isset( $src['excerpt'] ) ? (string) $src['excerpt'] : '';
 
             if ( ! $title && ! $url ) {
                 continue;
             }
 
-            $html .= '<li>';
+            // Date and category come from the actual post, not the model,
+            // so they are always accurate for the linked article.
+            $meta_parts = array();
+            $post_id    = isset( $src['id'] ) ? absint( $src['id'] ) : 0;
+            $post       = $post_id ? get_post( $post_id ) : null;
+            if ( $post instanceof WP_Post && 'publish' === $post->post_status ) {
+                $meta_parts[] = get_the_date( 'M j, Y', $post );
+                $categories   = get_the_category( $post->ID );
+                if ( ! empty( $categories ) && ! empty( $categories[0]->name ) ) {
+                    $meta_parts[] = $categories[0]->name;
+                }
+            }
+
+            $rank++;
+            $html .= '<li class="riviantrackr-source">';
+            $html .= '<span class="riviantrackr-source-rank" aria-hidden="true">' . intval( $rank ) . '</span>';
+            $html .= '<div class="riviantrackr-source-body">';
 
             if ( $url ) {
-                $html .= '<a href="' . esc_url( $url ) . '" rel="noopener noreferrer">';
+                $html .= '<a class="riviantrackr-source-title" href="' . esc_url( $url ) . '" rel="noopener noreferrer">';
                 $html .= $title ? esc_html( $title ) : esc_html( $url );
                 $html .= '</a>';
             } else {
-                $html .= esc_html( $title );
+                $html .= '<span class="riviantrackr-source-title">' . esc_html( $title ) . '</span>';
+            }
+
+            if ( ! empty( $meta_parts ) ) {
+                $html .= '<span class="riviantrackr-source-meta">' . esc_html( implode( ' · ', $meta_parts ) ) . '</span>';
             }
 
             if ( $excerpt ) {
-                $html .= '<span>' . esc_html( $excerpt ) . '</span>';
+                $html .= '<span class="riviantrackr-source-excerpt">' . esc_html( $excerpt ) . '</span>';
             }
 
-            $html .= '</li>';
+            $html .= '</div></li>';
         }
 
-        $html .= '</ul></div>';
+        $html .= '</ol></div>';
 
         return $html;
     }
