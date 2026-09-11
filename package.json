@@ -1,6 +1,11 @@
 {
   "name": "riviantrackr-ai-search-summary",
   "private": true,
+  "scripts": {
+    "build": "npm run build:js && npm run build:css",
+    "build:js": "terser assets/riviantrackr.js -c -m -o assets/riviantrackr.min.js && terser assets/riviantrackr-trending.js -c -m -o assets/riviantrackr-trending.min.js && terser assets/riviantrackr-admin.js -c -m -o assets/riviantrackr-admin.min.js",
+    "build:css": "cleancss -o assets/riviantrackr.min.css assets/riviantrackr.css && cleancss -o assets/riviantrackr-admin.min.css assets/riviantrackr-admin.css"
+  },
   "devDependencies": {
     "clean-css-cli": "^5.6.3",
     "terser": "^5.46.1"

@@ -1,6 +1,6 @@
 # RivianTrackr AI Search Summary
 
-[![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](https://github.com/RivianTrackr/riviantrackr-ai-search-summary)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](https://github.com/RivianTrackr/riviantrackr-ai-search-summary)
 [![WordPress](https://img.shields.io/badge/WordPress-6.9%2B-blue.svg)](https://wordpress.org/)
 [![PHP](https://img.shields.io/badge/PHP-8.4%2B-purple.svg)](https://php.net/)
 [![License](https://img.shields.io/badge/license-GPL--2.0%2B-green.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
@@ -37,7 +37,7 @@ A powerful WordPress plugin that adds AI-powered summaries to your search result
 - **IP-Based Rate Limiting** - Configurable requests per minute per IP address
 - **Global AI Rate Limiting** - Control maximum AI calls per minute
 - **Bot Detection** - Automatically skip AI processing for known bots
-- **Security Headers** - X-Content-Type-Options, X-Frame-Options, Referrer-Policy, X-XSS-Protection
+- **Security Headers** - X-Content-Type-Options, X-Frame-Options, Referrer-Policy, X-XSS-Protection and a Content Security Policy on plugin admin pages
 - **Secure API Key Storage** - Store API key via wp-config.php constant (recommended)
 
 ### Widgets & Shortcodes
@@ -91,6 +91,12 @@ define( 'RIVIANTRACKR_ANTHROPIC_API_KEY', 'sk-ant-your-api-key-here' );
 - Key not visible in WordPress admin (protected from admin account compromise)
 - Easier to manage across environments (staging/production)
 
+**Behind a proxy or CDN (Cloudflare, load balancer):** rate limiting is per visitor IP. If your server only sees the proxy's address, define the header that carries the real client IP so every visitor is not throttled as one:
+
+```php
+define( 'RIVIANTRACKR_TRUSTED_PROXY_HEADER', 'CF-Connecting-IP' );
+```
+
 **Using environment variables:**
 
 ```php
@@ -105,7 +111,7 @@ Navigate to **WP Admin → RivianTrackr AI Search Summary → Settings** to conf
 |---------|---------|
 | **Getting Started** | Enable/Disable, Anthropic API Key, API Key Validation |
 | **Site Configuration** | Site Name, Site Description, Badge/Sources/Feedback visibility, Max Sources Displayed |
-| **AI Configuration** | Model selection, Context Size, Content Length Per Post, Post Types, Max Response Tokens |
+| **AI Configuration** | Model selection, Reasoning Effort, Context Size, Content Length Per Post, Post Types, Max Response Tokens |
 | **Performance** | Cache TTL, Manual cache clear, Request Timeout, Max Calls Per Minute |
 | **Appearance** | Background, Text, Accent, Border colors, Custom CSS |
 | **Advanced** | Spam Blocklist, Relevance Keywords, Preserve Data on Uninstall |
@@ -150,7 +156,7 @@ Display trending search queries anywhere on your site.
 The plugin integrates with WordPress through standard hooks:
 
 - `loop_start` - Injects AI summary placeholder
-- `template_redirect` - Logs no-results searches
+- `template_redirect` - Logs no-results searches and marks search pages `DONOTCACHEPAGE` (the bot challenge token expires after 10 minutes, so search result pages must not be page-cached)
 - `rest_api_init` - Registers REST API endpoints
 - `widgets_init` - Registers trending widget
 - `riviantrackr_daily_log_purge` - Scheduled log cleanup

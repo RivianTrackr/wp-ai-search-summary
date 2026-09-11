@@ -90,6 +90,10 @@ class ApiHandler {
 			return array( 'error' => 'API key is missing. Please configure the plugin settings.' );
 		}
 
+		if ( empty( $model ) ) {
+			return array( 'error' => 'No AI model is selected. Choose a model in the plugin settings.' );
+		}
+
 		$endpoint = 'https://api.anthropic.com/v1/messages';
 
 		$posts_text = $this->format_posts_for_prompt( $posts );
@@ -101,10 +105,11 @@ class ApiHandler {
 
 		$configured_tokens = isset( $options['max_tokens'] ) ? (int) $options['max_tokens'] : RIVIANTRACKR_MAX_TOKENS;
 
-		// Note: no assistant-turn prefill here — Claude 4.6+ models (Sonnet 5,
-		// Opus 4.6/4.7/4.8) reject last-turn prefills with a 400. JSON output
-		// is requested via the system prompt; parse_ai_content() handles any
-		// markdown fences or preamble via brace extraction.
+		// Note: no assistant-turn prefill here — Claude 4.6+ models reject
+		// last-turn prefills with a 400. JSON output is enforced through
+		// structured outputs (output_config.format) on models that support it
+		// and requested via the system prompt everywhere; parse_ai_content()
+		// still handles markdown fences or preamble via brace extraction.
 		$body = array(
 			'model'      => $model,
 			'max_tokens' => $configured_tokens,
@@ -117,6 +122,11 @@ class ApiHandler {
 			),
 		);
 
+		$output_config = $this->build_output_config( $model, $options );
+		if ( ! empty( $output_config ) ) {
+			$body['output_config'] = $output_config;
+		}
+
 		$args = array(
 			'headers' => array(
 				'x-api-key'         => $api_key,
@@ -127,11 +137,186 @@ class ApiHandler {
 			'timeout' => isset( $options['request_timeout'] ) ? (int) $options['request_timeout'] : RIVIANTRACKR_API_TIMEOUT,
 		);
 
-		return $this->execute_with_retry(
+		$result = $this->execute_with_retry(
 			function () use ( $endpoint, $args ) {
 				return $this->make_anthropic_request( $endpoint, $args );
 			}
 		);
+
+		// If the model rejects output_config (effort or JSON schema support
+		// differs per model family), retry once without it and remember that
+		// for a day so the extra round-trip is not repeated on every search.
+		if ( ! empty( $output_config ) && isset( $result['error'], $result['_http_code'] ) && 400 === (int) $result['_http_code'] ) {
+			set_transient( $this->output_config_unsupported_key( $model ), 1, 86400 );
+			if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				error_log( '[RivianTrackr AI Search Summary] Model ' . $model . ' rejected output_config; retrying without it.' );
+			}
+			unset( $body['output_config'] );
+			$args['body'] = wp_json_encode( $body );
+
+			$result = $this->execute_with_retry(
+				function () use ( $endpoint, $args ) {
+					return $this->make_anthropic_request( $endpoint, $args );
+				}
+			);
+		}
+
+		unset( $result['_http_code'] );
+
+		return $result;
+	}
+
+	/**
+	 * Build the output_config block (effort + structured output schema) for a model.
+	 *
+	 * Effort is only sent to models that accept it (Opus 4.5+, Sonnet 4.6+,
+	 * Fable/Mythos); Haiku 4.5 and older models reject the parameter. The JSON
+	 * schema is only sent to models documented as supporting structured
+	 * outputs. A model that returned HTTP 400 for output_config in the last
+	 * day gets an empty config.
+	 *
+	 * @param string $model   Model ID.
+	 * @param array  $options Plugin options (reads 'effort').
+	 * @return array output_config array, or empty array when nothing applies.
+	 */
+	public function build_output_config( string $model, array $options ): array {
+		if ( get_transient( $this->output_config_unsupported_key( $model ) ) ) {
+			return array();
+		}
+
+		$config = array();
+
+		$effort = isset( $options['effort'] ) ? (string) $options['effort'] : '';
+		if ( $effort !== '' && $this->model_supports_effort( $model ) ) {
+			$config['effort'] = $effort;
+		}
+
+		if ( $this->model_supports_structured_output( $model ) ) {
+			$config['format'] = array(
+				'type'   => 'json_schema',
+				'schema' => $this->get_response_schema(),
+			);
+		}
+
+		return $config;
+	}
+
+	/**
+	 * JSON schema for the summary response, used with structured outputs.
+	 *
+	 * @return array JSON schema.
+	 */
+	public function get_response_schema(): array {
+		return array(
+			'type'       => 'object',
+			'properties' => array(
+				'answer_html' => array( 'type' => 'string' ),
+				'results'     => array(
+					'type'  => 'array',
+					'items' => array(
+						'type'       => 'object',
+						'properties' => array(
+							'id'      => array( 'type' => 'integer' ),
+							'title'   => array( 'type' => 'string' ),
+							'url'     => array( 'type' => 'string' ),
+							'excerpt' => array( 'type' => 'string' ),
+							'type'    => array( 'type' => 'string' ),
+						),
+						'required'             => array( 'id', 'title', 'url', 'excerpt', 'type' ),
+						'additionalProperties' => false,
+					),
+				),
+			),
+			'required'             => array( 'answer_html', 'results' ),
+			'additionalProperties' => false,
+		);
+	}
+
+	/**
+	 * Parse a Claude model ID into family and version.
+	 *
+	 * Handles current IDs (claude-sonnet-5, claude-haiku-4-5) and dated
+	 * snapshots (claude-opus-4-1-20250805, claude-sonnet-4-20250514). Legacy
+	 * "claude-3-5-haiku" style IDs return null.
+	 *
+	 * @param string $model Model ID.
+	 * @return array{family: string, version: float}|null
+	 */
+	public function parse_model_id( string $model ): ?array {
+		if ( ! preg_match( '/^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/', $model, $m ) ) {
+			return null;
+		}
+
+		$major = (int) $m[2];
+		$minor = isset( $m[3] ) && $m[3] !== '' ? (int) $m[3] : 0;
+
+		return array(
+			'family'  => $m[1],
+			'version' => (float) ( $major . '.' . $minor ),
+		);
+	}
+
+	/**
+	 * Whether a model accepts output_config.effort.
+	 *
+	 * @param string $model Model ID.
+	 * @return bool
+	 */
+	public function model_supports_effort( string $model ): bool {
+		$info = $this->parse_model_id( $model );
+		if ( ! $info ) {
+			return false;
+		}
+
+		switch ( $info['family'] ) {
+			case 'fable':
+			case 'mythos':
+				return true;
+			case 'opus':
+				return $info['version'] >= 4.5;
+			case 'sonnet':
+				return $info['version'] >= 4.6;
+			default:
+				return false;
+		}
+	}
+
+	/**
+	 * Whether a model supports structured outputs (output_config.format).
+	 *
+	 * @param string $model Model ID.
+	 * @return bool
+	 */
+	public function model_supports_structured_output( string $model ): bool {
+		$info = $this->parse_model_id( $model );
+		if ( ! $info ) {
+			return false;
+		}
+
+		switch ( $info['family'] ) {
+			case 'fable':
+			case 'mythos':
+				return true;
+			case 'opus':
+				return in_array( $info['version'], array( 4.1, 4.5, 4.8 ), true ) || $info['version'] >= 5;
+			case 'sonnet':
+				return $info['version'] >= 5;
+			case 'haiku':
+				return $info['version'] >= 4.5;
+			default:
+				return false;
+		}
+	}
+
+	/**
+	 * Transient key that records a model rejecting output_config.
+	 *
+	 * @param string $model Model ID.
+	 * @return string Transient key.
+	 */
+	private function output_config_unsupported_key( string $model ): string {
+		return 'riviantrackr_no_outcfg_' . substr( hash( 'sha256', $model ), 0, 24 );
 	}
 
 	/**
@@ -182,7 +367,12 @@ class ApiHandler {
 		if ( $attempt > 0 ) {
 			$error_msg .= ' (after ' . ( $attempt + 1 ) . ' attempts)';
 		}
-		return array( 'error' => $error_msg );
+
+		$failure = array( 'error' => $error_msg );
+		if ( isset( $last_error['code'] ) ) {
+			$failure['_http_code'] = (int) $last_error['code'];
+		}
+		return $failure;
 	}
 
 	/**
@@ -206,6 +396,10 @@ class ApiHandler {
 		$finish_reason = 'stop';
 		if ( $stop_reason === 'max_tokens' ) {
 			$finish_reason = 'length';
+		} elseif ( $stop_reason === 'refusal' ) {
+			// Safety classifiers declined the request (HTTP 200). Any content
+			// present is not guaranteed to match the schema.
+			$finish_reason = 'content_filter';
 		}
 
 		return array(
@@ -270,10 +464,13 @@ class ApiHandler {
 		$is_connection = strpos( $error_msg, 'cURL error 6' ) !== false || strpos( $error_msg, 'resolve host' ) !== false;
 
 		if ( $is_timeout ) {
+			// Not retryable: the browser aborts after one request timeout, so
+			// a retry would spend another full timeout (and another API call)
+			// on a response nobody will see.
 			return array(
 				'success'   => false,
 				'error'     => 'Request timed out. The AI service may be slow right now. Please try again.',
-				'retryable' => true,
+				'retryable' => false,
 			);
 		}
 		if ( $is_connection ) {
@@ -308,6 +505,7 @@ class ApiHandler {
 		if ( $code === 429 ) {
 			return array(
 				'success'   => false,
+				'code'      => $code,
 				'error'     => $provider . ' rate limit exceeded. Please try again in a few moments.',
 				'retryable' => true,
 			);
@@ -316,6 +514,7 @@ class ApiHandler {
 		if ( $code >= 500 && $code < 600 ) {
 			return array(
 				'success'   => false,
+				'code'      => $code,
 				'error'     => $provider . ' service temporarily unavailable. Please try again later.',
 				'retryable' => true,
 			);
@@ -324,6 +523,7 @@ class ApiHandler {
 		if ( $code === 401 ) {
 			return array(
 				'success'   => false,
+				'code'      => $code,
 				'error'     => 'Invalid ' . $provider . ' API key. Please check your plugin settings.',
 				'retryable' => false,
 			);
@@ -332,6 +532,7 @@ class ApiHandler {
 		if ( $code === 400 ) {
 			return array(
 				'success'   => false,
+				'code'      => $code,
 				'error'     => $provider . ' rejected the request (HTTP 400). Check the selected model and plugin settings.',
 				'retryable' => false,
 			);
@@ -339,6 +540,7 @@ class ApiHandler {
 
 		return array(
 			'success'   => false,
+			'code'      => $code,
 			'error'     => 'AI service error. Please try again later.',
 			'retryable' => false,
 		);
@@ -381,9 +583,14 @@ class ApiHandler {
 	 * @return array|null Parsed data or null on failure.
 	 */
 	public function parse_ai_content( array $api_response, string &$ai_error ): ?array {
-		// Check for model refusal
+		// Check for model refusal (explicit refusal field, or a "refusal"
+		// stop reason mapped to content_filter during normalization).
 		if ( ! empty( $api_response['choices'][0]['message']['refusal'] ) ) {
 			$ai_error = 'The AI model declined to answer this query.';
+			return null;
+		}
+		if ( ( $api_response['choices'][0]['finish_reason'] ?? '' ) === 'content_filter' ) {
+			$ai_error = 'The response was filtered by content policy. Please try a different search.';
 			return null;
 		}
 
@@ -482,6 +689,14 @@ class ApiHandler {
 	 * @return array{success: bool, message: string}
 	 */
 	public function test_anthropic_key( string $api_key ): array {
+		if ( empty( $api_key ) ) {
+			return array(
+				'success' => false,
+				'message' => 'API key is empty.',
+			);
+		}
+
+		// Minimal one-token request against the cheapest current model.
 		$response = wp_safe_remote_post(
 			'https://api.anthropic.com/v1/messages',
 			array(
@@ -491,16 +706,16 @@ class ApiHandler {
 					'Content-Type'      => 'application/json',
 				),
 				'body'    => wp_json_encode( array(
-					'model'      => 'claude-haiku-4-5-20251001',
-					'max_tokens' => 10,
+					'model'      => 'claude-haiku-4-5',
+					'max_tokens' => 1,
 					'messages'   => array(
 						array(
 							'role'    => 'user',
-							'content' => 'Say "ok".',
+							'content' => 'Hi',
 						),
 					),
 				) ),
-				'timeout' => 15,
+				'timeout' => 10,
 			)
 		);
 
@@ -512,19 +727,40 @@ class ApiHandler {
 		}
 
 		$code = wp_remote_retrieve_response_code( $response );
-		if ( $code === 200 ) {
+
+		if ( $code === 401 ) {
 			return array(
-				'success' => true,
-				'message' => 'Anthropic API key is valid.',
+				'success' => false,
+				'message' => 'Invalid API key. Please check your Anthropic key and try again.',
 			);
 		}
 
-		$body = json_decode( wp_remote_retrieve_body( $response ), true );
-		$api_msg = $body['error']['message'] ?? ( 'HTTP ' . $code );
+		if ( $code === 403 ) {
+			return array(
+				'success' => false,
+				'message' => 'API key lacks required permissions. Check your Anthropic Console settings.',
+			);
+		}
+
+		if ( $code === 429 ) {
+			return array(
+				'success' => false,
+				'message' => 'Rate limit exceeded. Your API key works but has hit rate limits.',
+			);
+		}
+
+		if ( $code < 200 || $code >= 300 ) {
+			$body    = json_decode( wp_remote_retrieve_body( $response ), true );
+			$api_msg = $body['error']['message'] ?? ( 'HTTP ' . $code );
+			return array(
+				'success' => false,
+				'message' => 'API error: ' . $api_msg,
+			);
+		}
 
 		return array(
-			'success' => false,
-			'message' => 'API error: ' . $api_msg,
+			'success' => true,
+			'message' => 'Anthropic API key is valid and working!',
 		);
 	}
 }

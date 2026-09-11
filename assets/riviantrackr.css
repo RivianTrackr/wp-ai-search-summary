@@ -1,26 +1,92 @@
 /* ── RivianTrackr Design System (Dark Theme) ── */
+/* Only the tokens this stylesheet actually uses. Values follow CLAUDE.md. */
 :root {
   --rtg-accent: #fba919;
   --rtg-accent-hover: #ffbe4a;
-  --rtg-bg-primary: #16191e;
   --rtg-bg-card: #16191e;
-  --rtg-bg-input: #3a3e45;
   --rtg-bg-deep: #121418;
   --rtg-text-primary: #ece9e4;
-  --rtg-text-light: #ece9e4;
-  --rtg-text-muted: #ece9e4;
-  --rtg-text-heading: #ece9e4;
+  --rtg-text-muted: #9ca3af;
   --rtg-border: #3a3e45;
-  --rtg-star-filled: #fba919;
-  --rtg-star-user: #4ade80;
-  --rtg-star-empty: #2c2f34;
+  --rtg-radius-xs: 4px;
   --rtg-radius-card: 12px;
-  --rtg-radius-input: 8px;
-  --rtg-radius-badge: 6px;
-  --rtg-radius-pill: 4px;
-  --rtg-radius-toggle: 34px;
+  --rtg-radius-full: 9999px;
   --rtg-font-primary: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
-  --rtg-font-mono: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+/* Summary card layout (formerly inline styles on the widget markup; kept in
+   the stylesheet so Custom CSS can override it without !important). The
+   background, text, accent and border colors come from the plugin settings
+   via an inline style block appended after this file. */
+.riviantrackr-summary {
+  margin-bottom: 1.5rem;
+}
+
+.riviantrackr-summary-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1.25rem;
+  border: 1px solid var(--rtg-border);
+  border-radius: var(--rtg-radius-card);
+  background-color: var(--rtg-bg-card);
+  color: var(--rtg-text-primary);
+  font-family: var(--rtg-font-primary);
+}
+
+.riviantrackr-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.riviantrackr-summary-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.riviantrackr-error {
+  margin: 0;
+  opacity: 0.8;
+}
+
+.riviantrackr-skeleton-status {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.riviantrackr-feedback {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.3);
+  font-size: 0.85rem;
+}
+
+.riviantrackr-feedback[hidden],
+.riviantrackr-feedback-prompt[hidden],
+.riviantrackr-feedback-thanks[hidden] {
+  display: none;
+}
+
+.riviantrackr-feedback-prompt {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.riviantrackr-feedback-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.riviantrackr-disclaimer {
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  opacity: 0.65;
 }
 
 @keyframes riviantrackr-spin {
@@ -71,7 +137,7 @@
   align-items:center;
   gap:0.35rem;
   padding:0.15rem 0.55rem;
-  border-radius:999px;
+  border-radius: var(--rtg-radius-full);
   border:1px solid var(--rtg-border);
   background: var(--rtg-bg-deep);
   color: var(--rtg-text-primary);
@@ -86,7 +152,7 @@
 .riviantrackr-ai-mark {
   width:10px;
   height:10px;
-  border-radius:999px;
+  border-radius: var(--rtg-radius-full);
   border:1px solid var(--rtg-border);
   position:relative;
   flex-shrink:0;
@@ -96,7 +162,7 @@
   content:'';
   position:absolute;
   inset:2px;
-  border-radius:999px;
+  border-radius: var(--rtg-radius-full);
   background:linear-gradient(135deg, #fba919, #d2de24, #86c440, #5ec095, #34c5ec, #2b96d2, #3571b8, #534da0, #d11d55, #ef3d6c, #ed1a36, #ee383a);
 }
 
@@ -128,6 +194,11 @@
   color: var(--rtg-accent);
 }
 
+.riviantrackr-sources-toggle:focus-visible {
+  outline: 2px solid var(--rtg-accent);
+  outline-offset: 2px;
+}
+
 .riviantrackr-sources-list {
   margin:0;
   padding-left:1.1rem;
@@ -155,7 +226,6 @@
 
 .riviantrackr-sources-list span {
   display:block;
-  opacity:0.8;
   color: var(--rtg-text-muted);
 }
 
@@ -220,7 +290,7 @@
 
 .riviantrackr-skeleton-line {
   height: 1rem;
-  border-radius: var(--rtg-radius-pill);
+  border-radius: var(--rtg-radius-xs);
   background-color: rgba(58, 62, 69, 0.5);
   background-image: linear-gradient(
     90deg,
@@ -246,12 +316,19 @@
 
 /* Feedback buttons */
 .riviantrackr-feedback-btn {
+  padding: 0.25rem 0.75rem;
+  border: 1px solid currentColor;
+  border-radius: var(--rtg-radius-xs);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
   transition: opacity 0.15s ease, background-color 0.15s ease;
 }
 
 .riviantrackr-feedback-btn:hover:not(:disabled) {
-  opacity: 1 !important;
-  background-color: rgba(128, 128, 128, 0.1);
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--rtg-text-primary) 10%, transparent);
 }
 
 .riviantrackr-feedback-btn:focus-visible {
@@ -260,7 +337,7 @@
 }
 
 .riviantrackr-feedback-btn:disabled {
-  opacity: 0.5 !important;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 

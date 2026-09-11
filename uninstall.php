@@ -54,12 +54,17 @@ delete_option( 'riviantrackr_anthropic_models_cache' );
 delete_option( 'riviantrackr_cache_namespace' );
 delete_option( 'riviantrackr_cache_keys' );
 delete_option( 'riviantrackr_db_version' );
+delete_option( 'riviantrackr_version' );
 // Legacy searchlens options (from pre-1.0.7 installations)
 delete_option( 'searchlens_options' );
 delete_option( 'searchlens_models_cache' );
 delete_option( 'searchlens_cache_namespace' );
 delete_option( 'searchlens_cache_keys' );
 delete_option( 'searchlens_db_version' );
+
+// Remove the scheduled log purge and per-user analytics preferences
+wp_clear_scheduled_hook( 'riviantrackr_daily_log_purge' );
+delete_metadata( 'user', 0, 'riviantrackr_hide_zero', '', true );
 
 // Delete all transients created by the plugin (current and legacy prefixes)
 // Transients are stored in options table with _transient_ prefix

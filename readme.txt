@@ -4,7 +4,7 @@ Tags: search, ai, anthropic, claude, summary
 Requires at least: 6.9
 Tested up to: 7.0
 Requires PHP: 8.4
-Stable tag: 2.0.1
+Stable tag: 2.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -162,6 +162,31 @@ The plugin is designed with privacy in mind:
 6. WordPress dashboard widget with quick stats
 
 == Changelog ==
+
+= 2.1.0 =
+* Fixed: "Show sources" and the feedback buttons did nothing when a summary was served from the browser session cache.
+* Fixed: Repeating a search within five minutes returned a 429 even when the summary was already cached. The duplicate-query throttle now only applies to genuine cache misses.
+* Fixed: Cached "no results" responses were logged as successful session cache hits, inflating the success rate.
+* Fixed: Feedback errors (stale nonce, duplicate vote) were shown as "Thanks for your feedback".
+* Fixed: The trending widget constructed a second plugin instance on every render, registering every hook twice.
+* Fixed: An empty model selection (possible after the 2.0 migration) was sent to the API and failed with HTTP 400. A default model now applies.
+* Fixed: Timed-out API requests were retried up to three times while the browser had already given up. Timeouts are no longer retried.
+* Fixed: Admin AJAX buttons stuck on "Testing..." when admin-ajax returned a non-JSON reply (expired session).
+* Fixed: Session cache keys could collide across different queries.
+* Fixed: The summary box was injected into RSS search feeds.
+* Fixed: A deprecated dynamic property write when repairing the analytics table.
+* Fixed: Deactivating and reactivating the plugin stopped the scheduled log purge.
+* Security: The analytics-page auto-purge form copied the wp-config.php API key constant into the database on save. The key fields are no longer echoed, and a key defined in wp-config.php is never stored.
+* Security: The debug-log API key redaction filter never actually redacted anything and has been removed (WordPress passes request args by value). Keep the key in wp-config.php if debug logging is on.
+* Security: Shortcode color attributes are validated as hex colors; the analytics filter link is nonce-protected; the admin CSP allows Gravatar and emoji images.
+* Changed: Search result pages are marked DONOTCACHEPAGE with no-cache headers while the plugin is enabled, because the bot challenge token and REST nonce rendered into the page expire.
+* Added: Reasoning Effort setting (Low / Medium / High, default Low). Claude Sonnet 5 and Opus 5 think by default and those tokens count against Max Response Tokens; Low keeps summaries fast, cheap, and complete. Sent only to models that accept it.
+* Added: Structured outputs. On models that support it the response is constrained to the plugin's JSON schema, removing brace-extraction parse failures. Models that reject it fall back automatically.
+* Added: Refusal stop reasons are reported as content-policy filtering instead of a generic error. claude-opus-5 added to the fallback model list.
+* Changed: Summary widget inline styles moved into the stylesheet so Custom CSS can override them; the "Default CSS Reference" modal now shows the real stylesheet.
+* Changed: Accessibility: loading status is announced, error messages are no longer double-announced, the CSS reference modal is a proper dialog with focus management, admin result messages use live regions, log checkboxes have labels, decorative icons are hidden from assistive tech, and a noscript notice is shown.
+* Changed: Dropped the unused languages/ stub; the plugin ships English strings only.
+* Dev: `npm run build` rebuilds the minified assets.
 
 = 2.0.1 =
 * Fixed: All summary requests failed with HTTP 400 on Claude 4.6+ models (Sonnet 5, Sonnet 4.6, Opus 4.6/4.7/4.8). The assistant-prefill technique introduced in 2.0.0 is not supported on these models and has been removed; JSON output is enforced via the system prompt with brace-extraction fallback as before.
@@ -343,6 +368,9 @@ The plugin is designed with privacy in mind:
 * Security headers and prepared statements
 
 == Upgrade Notice ==
+
+= 2.1.0 =
+Bug-fix and hardening release. Adds a Reasoning Effort setting (default Low) and structured JSON outputs. If your search pages were being page-cached, note they are now sent with no-cache headers.
 
 = 2.0.0 =
 Breaking: OpenAI support removed — the plugin now requires an Anthropic API key. Settings migrate automatically, but if you were using an OpenAI model you must pick a Claude model in Settings after upgrading. Also fixes truncated-response errors and lets admins test without rate limits.
