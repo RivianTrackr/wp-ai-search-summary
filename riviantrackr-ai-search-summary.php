@@ -6,7 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Plugin Name: AI Search Summary
  * Description: Add AI-powered summaries to WordPress search results using Anthropic Claude. Non-blocking, with analytics, cache control, and collapsible sources.
- * Version: 2.1.0
+ * Version: 2.1.1
  * Author: RivianTrackr
  * Author URI: https://github.com/RivianTrackr/
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Text Domain: riviantrackr-ai-search-summary
  */
 
-define( 'RIVIANTRACKR_VERSION', '2.1.0' );
+define( 'RIVIANTRACKR_VERSION', '2.1.1' );
 define( 'RIVIANTRACKR_ASSET_SUFFIX', defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? '' : '.min' );
 
 // Load the namespaced class autoloader.
@@ -876,9 +876,15 @@ class RivianTrackr_AI_Search_Summary {
 
         $border_rgba = "rgba({$border_rgb['r']},{$border_rgb['g']},{$border_rgb['b']},0.4)";
 
-        // Target the summary container and content (badge keeps its default dark style)
+        // Target the summary container and content (badge keeps its default dark style).
+        // The design tokens are re-declared on the card so every component inside
+        // (feedback buttons, sources toggle, focus rings) follows the configured colors.
         $css = "
 .riviantrackr-summary-inner {
+    --rtg-accent: {$accent};
+    --rtg-text-primary: {$text};
+    --rtg-border: {$border};
+    --rtg-bg-card: {$bg};
     background-color: {$bg};
     border-color: {$border_rgba};
 }
@@ -3761,13 +3767,15 @@ class RivianTrackr_AI_Search_Summary {
                 <?php if ( $show_feedback ) : ?>
                 <div id="riviantrackr-feedback" class="riviantrackr-feedback" hidden>
                     <div class="riviantrackr-feedback-prompt">
-                        <span>Was this summary helpful?</span>
+                        <span class="riviantrackr-feedback-label">Was this summary helpful?</span>
                         <div class="riviantrackr-feedback-buttons">
                             <button type="button" class="riviantrackr-feedback-btn" data-helpful="1" aria-label="Yes, helpful">
-                                &#128077; Yes
+                                <svg class="riviantrackr-feedback-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg>
+                                <span>Yes</span>
                             </button>
                             <button type="button" class="riviantrackr-feedback-btn" data-helpful="0" aria-label="No, not helpful">
-                                &#128078; No
+                                <svg class="riviantrackr-feedback-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="currentColor"><path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/></svg>
+                                <span>No</span>
                             </button>
                         </div>
                     </div>

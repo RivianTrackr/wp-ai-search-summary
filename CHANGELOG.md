@@ -5,6 +5,12 @@ All notable changes to RivianTrackr AI Search Summary will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-09-11
+
+### Changed
+- **Feedback buttons restyled to the site design system.** "Yes" / "No" are now pill-shaped secondary buttons (`border-radius: 20px`, 36px min height, inline thumbs icons in place of emoji) with the accent-tinted `color-mix()` hover, `scale(0.93)` press, accent focus ring, and 0.5 opacity when disabled. The recorded vote stays highlighted with the accent background and dark text, and `aria-pressed` marks it for assistive tech. The buttons remain visible after voting so the choice stays readable.
+- The Appearance colors (accent, text, border, background) are now re-declared as `--rtg-*` tokens on `.riviantrackr-summary-inner`, so every component inside the card, including the new buttons and focus rings, follows the configured palette instead of only the handful of selectors the inline CSS targeted.
+
 ## [2.1.0] - 2026-09-11
 
 ### Fixed

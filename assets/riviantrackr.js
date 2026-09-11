@@ -194,11 +194,25 @@
       if (!q || !feedbackEndpoint) return;
 
       var buttons = feedbackContainer.querySelectorAll('.riviantrackr-feedback-btn');
-      var prompt = feedbackContainer.querySelector('.riviantrackr-feedback-prompt');
       var thanks = feedbackContainer.querySelector('.riviantrackr-feedback-thanks');
+
+      var SELECTED = 'riviantrackr-feedback-btn--selected';
 
       function setButtons(disabled) {
         buttons.forEach(function(b) { b.disabled = disabled; });
+      }
+
+      function markSelected() {
+        buttons.forEach(function(b) { b.classList.remove(SELECTED); });
+        btn.classList.add(SELECTED);
+        btn.setAttribute('aria-pressed', 'true');
+      }
+
+      function clearSelected() {
+        buttons.forEach(function(b) {
+          b.classList.remove(SELECTED);
+          b.removeAttribute('aria-pressed');
+        });
       }
 
       function showMessage(message) {
@@ -207,8 +221,10 @@
         if (message) thanks.textContent = message;
       }
 
-      // Disable buttons immediately
+      // Disable buttons immediately and highlight the chosen vote; the
+      // buttons stay visible so the recorded vote remains readable.
       setButtons(true);
+      markSelected();
 
       fetch(feedbackEndpoint, {
         method: 'POST',
@@ -229,21 +245,21 @@
       .then(function(result) {
         var data = result.data;
         if (result.ok && data.success) {
-          if (prompt) prompt.hidden = true;
           showMessage(data.message);
           return;
         }
         // Duplicate vote: the vote is already counted, so keep the buttons off.
         if (result.ok && data.success === false && /already/i.test(String(data.message || ''))) {
-          if (prompt) prompt.hidden = true;
           showMessage(data.message);
           return;
         }
         // Real failure (stale nonce, rate limit, server error): let them retry.
+        clearSelected();
         setButtons(false);
         showMessage(data.message || 'Could not record your feedback. Please try again.');
       })
       .catch(function() {
+        clearSelected();
         setButtons(false);
         showMessage('Could not record your feedback. Please try again.');
       });
